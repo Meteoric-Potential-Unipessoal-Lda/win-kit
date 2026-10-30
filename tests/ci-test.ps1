@@ -42,7 +42,8 @@ Register-ScheduledTask -TaskName 'WinKitTestTask' -TaskPath '\WinKitTest\' -Acti
 & sc.exe create WinKitTestSvc binPath= 'C:\winkit-test\fake.exe' start= auto | Out-Host
 & sc.exe create WinKitTestSvc2 binPath= 'C:\winkit-test\fake2.exe' start= delayed-auto | Out-Host
 $tmp = Join-Path $env:LOCALAPPDATA 'Temp'
-$oldF = Join-Path $tmp 'winkit-old.tmp'; Set-Content -LiteralPath $oldF -Value 'x'; (Get-Item -LiteralPath $oldF).LastWriteTime = (Get-Date).AddDays(-3)
+$oldF = Join-Path $tmp 'winkit-old.tmp'; [IO.File]::WriteAllBytes($oldF, (New-Object byte[] 2097152));  # 2 МБ: пункт очистки появляется от 1 МБ
+ (Get-Item -LiteralPath $oldF).LastWriteTime = (Get-Date).AddDays(-3)
 $newF = Join-Path $tmp 'winkit-new.tmp'; Set-Content -LiteralPath $newF -Value 'x'
 New-Item -ItemType Directory -Force -Path 'C:\winkit-precious' | Out-Null
 $prec = 'C:\winkit-precious\keep.txt'; Set-Content -LiteralPath $prec -Value 'precious'; (Get-Item -LiteralPath $prec).LastWriteTime = (Get-Date).AddDays(-3)
