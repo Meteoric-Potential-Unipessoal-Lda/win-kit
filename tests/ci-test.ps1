@@ -134,6 +134,11 @@ Check (Test-Path -LiteralPath $dlf) 'загрузки: файл пользова
 Check (-not (Test-Path -LiteralPath $err) -or -not ((Get-Content -LiteralPath $err -Raw) -match 'загрузки')) 'загрузки: без внутренних ошибок'
 Remove-Item -LiteralPath $dlf -Force -ErrorAction SilentlyContinue
 
+# ---------- 5. окно (WPF): собрать, прогнать диагностику в фоновом потоке, снять снимки экранов
+$rc = Run-Kit @('-Mode', 'guitest')
+Check ($rc -eq 0) "окно: самопроверка, код $rc"
+foreach ($n in @('overview', 'plan', 'run', 'rollback', 'reports')) { Check (Test-Path -LiteralPath (Join-Path $out "gui_$n.jpg")) "окно: снимок $n" }
+
 # ---------- уборка
 Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'WinKitTestJunk' -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'WinKitTestJunk2' -ErrorAction SilentlyContinue

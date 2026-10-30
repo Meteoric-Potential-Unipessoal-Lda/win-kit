@@ -13,5 +13,9 @@ if errorlevel 1 (
   exit /b
 )
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%~dp0.' -Recurse -File | Unblock-File" >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0winkit.ps1"
-if errorlevel 1 pause
+rem window (GUI) - the console hides itself once the window is open; if it cannot open - console menu
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0winkit.ps1" -Mode gui
+if errorlevel 5 (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0winkit.ps1"
+  if errorlevel 1 pause
+)
