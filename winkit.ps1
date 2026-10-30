@@ -1153,7 +1153,7 @@ function Read-JsonDict([string]$path) {
 function Get-JVal($o, [string]$path) {
   foreach ($k in ($path -split '\.')) {
     if ($null -eq $o) { return $null }
-    if ($o -is [System.Collections.IDictionary]) { if ($o.Contains($k)) { $o = $o[$k] } else { return $null } } else { return $null }
+    if ($o -is [System.Collections.IDictionary]) { if ($o.ContainsKey($k)) { $o = $o[$k] } else { return $null } } else { return $null }
   }
   return $o
 }
