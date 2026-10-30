@@ -113,6 +113,11 @@ Set-Content -LiteralPath (Join-Path $cp 'Extensions\aaaabbbbccccddddeeeeffffgggg
 Set-Content -LiteralPath (Join-Path $cp 'Secure Preferences') -Value '{"extensions":{"settings":{"aaaabbbbccccddddeeeeffffgggghhhh":{"location":4,"path":"C:\\winkit-ext"}}}}' -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $cp 'Preferences') -Value '{"default_search_provider_data":{"template_url_data":{"url":"https://evil-search.example/?q={searchTerms}"}},"a":1,"A":2}' -Encoding UTF8
 
+# старый большой файл в «Загрузках» — должен попасть в отчёт (и не удаляться)
+$dl = Join-Path $env:USERPROFILE 'Downloads'; New-Item -ItemType Directory -Force -Path $dl | Out-Null
+$dlf = Join-Path $dl 'winkit-old-setup.zip'
+$fs = [IO.File]::Create($dlf); $fs.SetLength(60MB); $fs.Close(); (Get-Item -LiteralPath $dlf).LastWriteTime = (Get-Date).AddDays(-200)
+
 # ---------- 4. диагностика после — «было/стало»
 $rc = Run-Kit @('-Mode', 'diag')
 Check ($rc -eq 0) "diag после: код выхода $rc"
@@ -124,6 +129,10 @@ Check ($rep -match 'evil-search\.example') 'браузер: чужой поис�
 $err = Join-Path $lastDiag.FullName 'errors.txt'
 Check (-not (Test-Path -LiteralPath $err) -or -not ((Get-Content -LiteralPath $err -Raw) -match 'браузеры')) 'браузер: без внутренних ошибок'
 Remove-Item -LiteralPath $cp -Recurse -Force -ErrorAction SilentlyContinue
+Check ($rep -match 'winkit-old-setup\.zip') 'загрузки: старый большой файл в отчёте'
+Check (Test-Path -LiteralPath $dlf) 'загрузки: файл пользователя не удалён'
+Check (-not (Test-Path -LiteralPath $err) -or -not ((Get-Content -LiteralPath $err -Raw) -match 'загрузки')) 'загрузки: без внутренних ошибок'
+Remove-Item -LiteralPath $dlf -Force -ErrorAction SilentlyContinue
 
 # ---------- уборка
 Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'WinKitTestJunk' -ErrorAction SilentlyContinue
