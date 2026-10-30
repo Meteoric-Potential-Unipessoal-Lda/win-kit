@@ -1,0 +1,38 @@
+name: test
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize (UTF-8 BOM + CRLF)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/normalize.ps1
+      - name: Parse with Windows PowerShell 5.1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/parse.ps1
+      - name: Diag -> optimize -> rollback
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/ci-test.ps1
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.os }}
+          path: ci-reports
+      - name: Upload kit
+        if: matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-kit
+          path: |
+            winkit.ps1
+            start.bat
+            README.txt
+            data/
