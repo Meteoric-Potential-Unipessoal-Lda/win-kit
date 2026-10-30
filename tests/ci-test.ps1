@@ -105,9 +105,24 @@ Check ((Get-RV $defK 'DisableAntiSpyware') -eq '1') 'откат: запрет З
 $rc = Run-Kit @('-Mode', 'rollback', '-Yes')
 Check ($rc -eq 0) "повторный откат ничего не ломает: код $rc"
 
+# ---------- 3б. браузер: подставной профиль Chrome с расширением «вручную» и чужим поиском
+$cp = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data\Profile 99'
+New-Item -ItemType Directory -Force -Path (Join-Path $cp 'Extensions\aaaabbbbccccddddeeeeffffgggghhhh\1.0') | Out-Null
+Set-Content -LiteralPath (Join-Path $cp 'Extensions\aaaabbbbccccddddeeeeffffgggghhhh\1.0\manifest.json') -Value '{"name":"WinKit Test Coupons","version":"1.0"}' -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $cp 'Secure Preferences') -Value '{"extensions":{"settings":{"aaaabbbbccccddddeeeeffffgggghhhh":{"location":4,"path":"C:\\winkit-ext"}}}}' -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $cp 'Preferences') -Value '{"default_search_provider_data":{"template_url_data":{"url":"https://evil-search.example/?q={searchTerms}"}},"a":1,"A":2}' -Encoding UTF8
+
 # ---------- 4. диагностика после — «было/стало»
 $rc = Run-Kit @('-Mode', 'diag')
 Check ($rc -eq 0) "diag после: код выхода $rc"
+$lastDiag = @(Get-ChildItem -LiteralPath $out -Directory -Filter '*_diag_*' | Sort-Object Name)[-1]
+$rep = Get-Content -LiteralPath (Join-Path $lastDiag.FullName 'report.txt') -Raw -Encoding UTF8
+Check ($rep -match 'WinKit Test Coupons') 'браузер: расширение найдено'
+Check ($rep -match 'установлено вручную') 'браузер: расширение «вручную» отмечено ВНИМАНИЕ'
+Check ($rep -match 'evil-search\.example') 'браузер: чужой поиск найден'
+$err = Join-Path $lastDiag.FullName 'errors.txt'
+Check (-not (Test-Path -LiteralPath $err) -or -not ((Get-Content -LiteralPath $err -Raw) -match 'браузеры')) 'браузер: без внутренних ошибок'
+Remove-Item -LiteralPath $cp -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---------- уборка
 Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'WinKitTestJunk' -ErrorAction SilentlyContinue
