@@ -805,7 +805,9 @@ function Measure-CleanTargets($targets) {
     $size = [long]0
     if ($t.Special -eq 'recycle') { $size = Get-RecycleBinSize }
     elseif ($t.Special -eq 'dism' -or $t.Special -eq 'drivers') { $size = $null }
-    elseif ($t.Special -eq 'winold') { if (Test-Path -LiteralPath $t.Paths[0]) { $size = (Measure-DirFast $t.Paths[0] (New-Object System.Collections.ArrayList) ((Get-Date).AddSeconds(60))).Size } else { $size = 0 } }
+    elseif ($t.Special -eq 'winold') {
+      if (Test-Path -LiteralPath $t.Paths[0]) { $m = Measure-DirFast $t.Paths[0] (New-Object System.Collections.ArrayList) ((Get-Date).AddSeconds(120)); if ($m.Partial) { $size = $null } else { $size = $m.Size } } else { $size = 0 }
+    }
     else { foreach ($p in $t.Paths) { $size += (Get-SizeSafe $p $t.Age $t.Filter) } }
     $t | Add-Member -NotePropertyName Size -NotePropertyValue $size -Force
   }
@@ -867,6 +869,11 @@ function Measure-DirFast([string]$path, $big, [datetime]$deadline) {
 
 function Get-SpaceAdvice([string]$p) {
   $rules = @(
+    @('Claude-Data|claudevm', 'данные приложения Claude (виртуальная машина Cowork) — вручную не удалять'),
+    @('\\Android$|\\\.android$|system-images|\.avd\\', 'Android Studio: SDK и образы эмуляторов — ненужные удалить в самой Android Studio (Device Manager / SDK Manager)'),
+    @('System Volume Information', 'точки восстановления Windows — не трогать (объём настраивается в «Защите системы»)'),
+    @('\\Recovery$|\\Recovery\\', 'раздел восстановления Windows — не трогать'),
+    @('AppData\\Roaming\\Mozilla$', 'профили Firefox (кэш чистится в самом Firefox)'),
     @('\\Downloads$', 'Загрузки — разобрать с клиентом (старые установщики, видео, архивы)'),
     @('\\(Videos|Pictures|Documents|Desktop|Music|OneDrive[^\\]*)$', 'личные файлы — перенести на другой диск/облако вместе с клиентом'),
     @('\\\$Recycle\.Bin$', 'Корзина — очистить (пункт 2, «спросить клиента»)'),
@@ -968,7 +975,11 @@ function Invoke-Diagnostics {
     @('автозагрузка', { $script:Startup = Get-StartupItems; $script:Tasks = Get-ThirdPartyTasks; $script:Services = Get-ThirdPartyServices }),
     @('безопасность', { $script:Sec = Get-SecurityInfo; $script:Susp = Find-Suspicious $script:Startup $script:Tasks; $script:Pups = Find-Pups $script:Programs }),
     @('место на диске', { $script:Clean = Get-CleanTargets; Measure-CleanTargets $script:Clean }),
-    @('что занимает место', { $script:Space = $null; $c = @($script:Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1; if ($c -and ($c.FreePct -lt 20 -or $c.Free -lt 40GB)) { $script:Space = Get-SpaceUsage } })
+    @('что занимает место', { $script:Space = $null; $c = @($script:Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1; if ($c -and ($c.FreePct -lt 20 -or $c.Free -lt 40GB)) { $script:Space = Get-SpaceUsage }
+      # Windows.old: если общий подсчёт посчитал больше — берём его
+      if ($script:Space) { $wo = @($script:Space.Top | Where-Object { $_.Path -ieq ($env:SystemDrive + '\Windows.old') -and -not $_.Partial }) | Select-Object -First 1
+        $ct = @($script:Clean | Where-Object { $_.Special -eq 'winold' }) | Select-Object -First 1
+        if ($wo -and $ct -and ($null -eq $ct.Size -or $wo.Size -gt $ct.Size)) { $ct.Size = $wo.Size } } })
   )
   foreach ($s in $steps) {
     Write-Host ('  - ' + $s[0] + ' ...') -ForegroundColor DarkGray
@@ -1127,7 +1138,8 @@ function Invoke-Uninstall($p) {
 
 function Get-OldDownloads {
   $dir = Join-Path $script:User.Profile 'Downloads'
-  $files = @(Get-FilesSafe $dir (90 * 24) '' | Where-Object { $_.Length -ge 50MB -and $_.Extension -match '(?i)^\.(exe|msi|iso|img|zip|rar|7z|tar|gz|mp4|mkv|avi|mov|dmg|apk|cab|msix|appx)$' })
+  $all = Get-FilesSafe $dir (90 * 24) ''
+  $files = @($all | Where-Object { $_.Length -ge 50MB -and $_.Extension -match '(?i)^\.(exe|msi|iso|img|zip|rar|7z|tar|gz|mp4|mkv|avi|mov|dmg|apk|cab|msix|appx)$' })
   $sum = [long]0; foreach ($f in $files) { $sum += $f.Length }
   return [pscustomobject]@{
     Count = $files.Count; Size = $sum
@@ -1158,6 +1170,15 @@ function Get-JVal($o, [string]$path) {
   return $o
 }
 
+# известные нормальные расширения, которые ставят сами браузеры/Google/Adobe (не считаются подозрительными)
+$script:KnownGoodExt = @(
+  'ghbmnnjooekpmoecnnnilnnbdlolhkhi', # Google Docs Offline
+  'lmjegmlicamnimmfhcmpkclmigmmcbeh', # Application Launcher For Drive
+  'efaidnbmnnnibpcajpcglclefindmkaj', # Adobe Acrobat (ставит Adobe Reader)
+  'nmmhkkegccagdldgiimedpiccmgmieda', # Chrome Web Store Payments
+  'aapocclcgogkmnckokdopfmhonfmgoek', 'felcaaldnbdncclmgdcncolpebgiejap', 'aohghmighlieiainnegkcijnfilokake', 'apdfllckaahabafndbhieahigkjlhalf',
+  'blpcfgokakmgnkcojhhkbfbldkacnbeo', 'pjkljhegncpnkpknbcohdijeoejaedia', 'pkedcjkdefgpdelpbcmbmeomcjbeemfm', 'coobgpohoikkiipiblmjeljniedjpjpf'
+)
 $script:GoodSearch = '(?i)^(https?://)?([a-z0-9-]+\.)*(google\.[a-z.]+|bing\.com|duckduckgo\.com|yandex\.[a-z]+|ya\.ru|ecosia\.org|yahoo\.com|startpage\.com|search\.brave\.com|qwant\.com|sapo\.pt|msn\.com|microsoft\.com|live\.com|office\.com|youtube\.com|gmail\.com|mail\.ru)([/:?]|$)|^chrome://|^edge://|^about:|^\{google:baseURL\}'
 
 function Get-ExtName([string]$dir, [string]$name) {
@@ -1224,7 +1245,7 @@ function Get-BrowserInfo {
     foreach ($a in @(Get-JVal $j 'addons')) {
       if (-not $a -or (Get-JVal $a 'type') -ne 'extension') { continue }
       $loc = [string](Get-JVal $a 'location')
-      if ($loc -match '^app-(builtin|system-defaults|system-addons)$') { continue }
+      if ($loc -match '^app-(builtin|system)') { continue }
       [void]$o.Extensions.Add([pscustomobject]@{ Id = [string](Get-JVal $a 'id'); Name = [string](Get-JVal $a 'defaultLocale.name'); Location = $loc
                                                  From = $(if ($loc -eq 'app-profile') { 'магазин/вручную' } else { 'другая программа (' + $loc + ')' }); Enabled = [bool](Get-JVal $a 'active'); Path = '' })
     }
@@ -1375,19 +1396,27 @@ function Get-Findings {
     if ($sec.MdmNote) { Add-F $f 'info' $sec.MdmNote 'Если ПК рабочий — ничего не менять' }
   }
   $managed = ($script:Sec -and @($script:Sec.Managed).Count -gt 0)
+  # расширения: одна строка на расширение (а не на каждый профиль браузера)
+  $extAgg = [ordered]@{}
   foreach ($b in @($script:Browsers)) {
     if (-not $b) { continue }
     foreach ($x in @($b.Extensions)) {
-      if (-not $x -or -not $x.Enabled) { continue }
+      if (-not $x -or -not $x.Enabled -or $script:KnownGoodExt -contains $x.Id) { continue }
       $loc = -1; if ([string]$x.Location -match '^\d+$') { $loc = [int]$x.Location }
-      if ($loc -eq 4 -or $loc -eq 8) { Add-F $f 'red' ("ВНИМАНИЕ: расширение {0} «{1}» установлено вручную, не из магазина" -f $b.Browser, $x.Name) 'Спросить клиента; если не знает — удалить расширение в браузере' }
-      elseif (@(2, 3, 6) -contains $loc) { Add-F $f 'yellow' ("Расширение {0} «{1}» поставлено другой программой" -f $b.Browser, $x.Name) 'Спросить клиента, пользуется ли' }
-      elseif (@(7, 9) -contains $loc -and -not $managed) { Add-F $f 'red' ("ВНИМАНИЕ: расширение {0} «{1}» поставлено принудительно (политикой) на домашнем ПК" -f $b.Browser, $x.Name) 'Частый приём рекламных вирусов — прислать отчёт Claude' }
-      elseif ($b.Browser -eq 'Firefox' -and [string]$x.Location -ne 'app-profile') { Add-F $f 'yellow' ("Расширение Firefox «{0}» поставлено другой программой" -f $x.Name) 'Спросить клиента' }
+      $sev = $null; $txt = $null; $adv = $null
+      if ($loc -eq 4 -or $loc -eq 8) { $sev = 'red'; $txt = 'ВНИМАНИЕ: расширение {0} «{1}» установлено вручную, не из магазина'; $adv = 'Спросить клиента; если не знает — удалить расширение в браузере' }
+      elseif (@(2, 3, 6) -contains $loc) { $sev = 'yellow'; $txt = 'Расширение {0} «{1}» поставлено другой программой'; $adv = 'Спросить клиента, пользуется ли' }
+      elseif (@(7, 9) -contains $loc -and -not $managed) { $sev = 'red'; $txt = 'ВНИМАНИЕ: расширение {0} «{1}» поставлено принудительно (политикой) на домашнем ПК'; $adv = 'Частый приём рекламных вирусов — прислать отчёт Claude' }
+      elseif ($b.Browser -eq 'Firefox' -and [string]$x.Location -notmatch '^app-(profile|builtin|system)') { $sev = 'yellow'; $txt = 'Расширение {0} «{1}» поставлено другой программой'; $adv = 'Спросить клиента' }
+      if (-not $sev) { continue }
+      $key = $b.Browser + '|' + $x.Id
+      if (-not $extAgg.Contains($key)) { $extAgg[$key] = [pscustomobject]@{ Sev = $sev; Text = ($txt -f $b.Browser, $x.Name); Adv = $adv; N = 0 } }
+      $extAgg[$key].N++
     }
     if ($b.Search -and [string]$b.Search -notmatch $script:GoodSearch) { Add-F $f 'yellow' ("{0}: поиск по умолчанию — {1}" -f $b.Browser, $b.Search) 'Если клиент не выбирал — вернуть Google/Bing в настройках браузера' }
     foreach ($h in @($b.Home)) { if ($h -and [string]$h -notmatch $script:GoodSearch) { Add-F $f 'info' ("{0}: стартовая страница — {1}" -f $b.Browser, $h) 'Проверить с клиентом' } }
   }
+  foreach ($e in $extAgg.Values) { $t = $e.Text; if ($e.N -gt 1) { $t += (' (профилей: {0})' -f $e.N) }; Add-F $f $e.Sev $t $e.Adv }
   if (@($script:ForcedExt).Count -and -not $managed) { Add-F $f 'red' ('ВНИМАНИЕ: браузеру принудительно ставятся расширения (политика): ' + (@($script:ForcedExt) -join '; ')) 'На домашнем ПК так делают рекламные вирусы — прислать отчёт Claude' }
   foreach ($x in @($script:Shortcuts)) { if ($x) { Add-F $f 'red' ("ВНИМАНИЕ: ярлык браузера открывает сайт: {0} -> {1}" -f (Split-Path -Leaf $x.Shortcut), $x.Args) 'Подмена ярлыка — пересоздать ярлык, прислать отчёт Claude' } }
   if ($script:OldDl -and $script:OldDl.Size -ge 2GB) { Add-F $f 'info' ("В «Загрузках» старые установщики/архивы/видео: {0} шт., {1}" -f $script:OldDl.Count, (Fmt-GB $script:OldDl.Size)) 'Список в отчёте — разобрать с клиентом (файлы пользователя набор не удаляет)' }
@@ -1693,6 +1722,7 @@ function Build-Plan {
   }
   foreach ($t in @($script:Clean)) {
     if ($t.Special -eq 'dism' -or $t.Special -eq 'drivers') { [void]$p.Add((New-PlanItem 'clean' 'clean' $t.Title 'размер заранее неизвестен; окно не закрывать' $t.Level $t $null)); continue }
+    if ($t.Special -eq 'winold' -and $null -eq $t.Size -and (Test-Path -LiteralPath $t.Paths[0])) { [void]$p.Add((New-PlanItem 'clean' 'clean' ($t.Title + ' — размер не успели посчитать') 'пропадёт возможность откатить большое обновление Windows' $t.Level $t $null)); continue }
     if (-not $t.Size -or $t.Size -lt 1MB) { continue }
     if ($t.Special -eq 'wu' -and @($script:Pending).Count) { continue }
     $det = ''
