@@ -1,0 +1,40 @@
+﻿kind	match	note
+remote	anydesk	AnyDesk — если это не наш доступ, спросить клиента, кто и зачем ставил
+remote	teamviewer	TeamViewer — спросить клиента, кто и зачем ставил
+remote	rustdesk	RustDesk — спросить клиента, кто и зачем ставил
+remote	ultraviewer	UltraViewer — часто используют телефонные мошенники; спросить клиента
+remote	ammyy	Ammyy Admin — часто используют мошенники; спросить клиента
+remote	supremo	Supremo — спросить клиента, кто и зачем ставил
+remote	splashtop	Splashtop — спросить клиента, кто и зачем ставил
+remote	screenconnect|connectwise control	ScreenConnect — часто используют мошенники («техподдержка»); спросить клиента
+remote	logmein|gotoassist|goto resolve	LogMeIn/GoTo — спросить клиента, кто и зачем ставил
+remote	dwagent|dwservice	DWService — спросить клиента, кто и зачем ставил
+remote	getscreen	Getscreen — спросить клиента, кто и зачем ставил
+remote	aeroadmin	AeroAdmin — спросить клиента, кто и зачем ставил
+remote	litemanager	LiteManager — спросить клиента, кто и зачем ставил
+remote	radmin	Radmin — спросить клиента, кто и зачем ставил
+remote	remote utilities|rutserv|rfusclient	Remote Utilities — часто используют мошенники; спросить клиента
+remote	ultravnc|tightvnc|realvnc|tigervnc|vnc server	VNC — спросить клиента, кто и зачем ставил
+remote	chrome remote desktop|remoting_host	Удалённый рабочий стол Chrome — спросить клиента
+pup	ccleaner	CCleaner — «чистильщик» с рекламой и навязчивыми напоминаниями
+pup	driver booster|advanced ?systemcare|iobit|smart defrag	IObit — «оптимизатор» с рекламой, часто ставится в нагрузку
+pup	reimage|restoro|fortect	«Ремонт ПК» с платной подпиской — пугает найденными «проблемами»
+pup	pc app store|pcappstore	PC App Store — рекламное ПО
+pup	segurazo|sAntivirus	Segurazo — навязчивый «антивирус», трудно удаляется
+pup	bytefence	ByteFence — навязчивый «антивирус», часто ставится в нагрузку
+pup	webcompanion|web companion	Lavasoft Web Companion — меняет поиск/домашнюю страницу
+pup	wave browser|wavebrowser	Wave Browser — рекламный браузер, ставится в нагрузку
+pup	onelaunch	OneLaunch — рекламная панель/браузер
+pup	shift browser	Shift Browser — рекламный браузер
+pup	pc accelerate|pc ?cleaner|pc ?optimizer|pc helpsoft|pc mechanic|reviver|slimware|systweak|advanced system ?optimizer|wise care|glary|auslogics	«Оптимизатор/чистильщик» — пользы нет, часто реклама и платная подписка
+pup	driver ?(easy|support|updater|reviver|genius|max|talent)|drivermax|drivers? ?pack	«Обновлятель драйверов» — может поставить неподходящий драйвер
+pup	total ?av|pc ?matic|scanguard	Сомнительный «антивирус» по подписке — спросить, платит ли клиент
+pup	mcafee webadvisor|webadvisor	McAfee WebAdvisor — ставится в нагрузку, не нужен при Защитнике Windows
+pup	avast secure browser|avg secure browser|ccleaner browser|norton secure browser	«Безопасный браузер» — ставится в нагрузку к антивирусу
+pup	mail\.ru|амиго|amigo|guard\.mail|спутник|sputnik	Mail.ru/Амиго — ставится в нагрузку, меняет поиск
+pup	conduit|ask toolbar|babylon|delta search|mystart|search protect	Рекламная панель/подмена поиска
+pup	kmspico|kms ?auto|kmsauto|aact|activator	Активатор (взломанная лицензия) — частый источник вирусов; сообщить клиенту
+trial	mcafee(?!.*webadvisor)	McAfee — часто пробная версия от производителя; если подписка не оплачена — удалить (Защитник включится сам)
+trial	norton(?!.*secure browser)	Norton — часто пробная версия; если не оплачен — удалить (Защитник включится сам)
+trial	wildtangent	WildTangent Games — предустановленные игры с рекламой
+trial	booking\.com|bookingcom	Booking.com — рекламная ссылка от производителя

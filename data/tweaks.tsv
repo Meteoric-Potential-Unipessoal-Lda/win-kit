@@ -1,0 +1,45 @@
+﻿id	level	section	scope	mode	path	name	type	value	minbuild	maxbuild	title	note
+ads_id	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo	Enabled	DWord	0			Рекламный идентификатор (реклама «по интересам» в приложениях)	Приложения перестанут показывать персональную рекламу
+suggested_apps	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SilentInstalledAppsEnabled	DWord	0			Тихая установка «предложенных» приложений (Candy Crush, TikTok и т.п.)	Windows перестанет сама ставить рекламные приложения
+suggested_apps	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	PreInstalledAppsEnabled	DWord	0				
+suggested_apps	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	OemPreInstalledAppsEnabled	DWord	0				
+start_suggestions	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SystemPaneSuggestionsEnabled	DWord	0			Реклама и «предложения» в меню Пуск	
+start_suggestions	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-338388Enabled	DWord	0				
+start_iris	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced	Start_IrisRecommendations	DWord	0	22000		Рекомендации приложений (реклама) в Пуске Windows 11	Применится после перезапуска Проводника
+start_iris	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced	Start_AccountNotifications	DWord	0	22621			
+tips	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-338389Enabled	DWord	0			Всплывающие «советы и предложения» Windows	
+tips	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SoftLandingEnabled	DWord	0				
+tips	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-310093Enabled	DWord	0				
+settings_suggest	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-338393Enabled	DWord	0			Рекомендуемое (рекламное) содержимое в «Параметрах»	
+settings_suggest	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-353694Enabled	DWord	0				
+settings_suggest	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-353696Enabled	DWord	0				
+lockscreen	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	RotatingLockScreenOverlayEnabled	DWord	0			«Интересные факты», подсказки и реклама на экране блокировки	Сама картинка экрана блокировки останется
+lockscreen	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager	SubscribedContent-338387Enabled	DWord	0				
+finish_setup	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement	ScoobeSystemSettingEnabled	DWord	0			Экран «Давайте завершим настройку устройства» (реклама Microsoft 365, OneDrive)	
+tailored	auto	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\Privacy	TailoredExperiencesWithDiagnosticDataEnabled	DWord	0			Персональные советы и реклама по диагностическим данным	
+search_highlights	base	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\SearchSettings	IsDynamicSearchBoxEnabled	DWord	0			Картинки дня и новости в поиске Windows	
+web_search	base	tweak	user	set	Software\Policies\Microsoft\Windows\Explorer	DisableSearchBoxSuggestions	DWord	1	19041		Интернет-результаты (Bing) в поиске Пуска	Поиск будет искать только на компьютере — быстрее; применится после перезапуска Проводника
+file_ext	base	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced	HideFileExt	DWord	0			Показывать расширения файлов	Защита: видно, что «фото.jpg.exe» — это программа
+gamedvr	base	tweak	user	set	System\GameConfigStore	GameDVR_Enabled	DWord	0			Фоновая запись игр (Xbox Game DVR)	Нужна только тем, кто записывает игровое видео
+gamedvr	base	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\GameDVR	AppCaptureEnabled	DWord	0				
+input_data	base	tweak	user	set	Software\Microsoft\Input\TIPC	Enabled	DWord	0			Отправка данных о вводе с клавиатуры в Microsoft	
+telemetry	base	tweak	machine	set	Software\Policies\Microsoft\Windows\DataCollection	AllowTelemetry	DWord	0			Телеметрия Windows — минимальный уровень	В «Параметрах» появится «Некоторыми параметрами управляет организация» — это нормально
+activity	base	tweak	machine	set	Software\Policies\Microsoft\Windows\System	PublishUserActivities	DWord	0			Журнал действий (история приложений и файлов для Microsoft)	
+activity	base	tweak	machine	set	Software\Policies\Microsoft\Windows\System	UploadUserActivities	DWord	0				
+edge_bg	base	tweak	machine	set	Software\Policies\Microsoft\Edge	StartupBoostEnabled	DWord	0			Edge: не висеть в памяти, когда он закрыт	В настройках Edge появится «Браузером управляет организация» — это нормально
+edge_bg	base	tweak	machine	set	Software\Policies\Microsoft\Edge	BackgroundModeEnabled	DWord	0				
+do_p2p	base	tweak	machine	set	Software\Policies\Microsoft\Windows\DeliveryOptimization	DODownloadMode	DWord	0			Раздача обновлений Windows чужим компьютерам	Windows перестанет отдавать обновления другим ПК в интернете
+widgets	ask	tweak	machine	set	Software\Policies\Microsoft\Dsh	AllowNewsAndInterests	DWord	0	22000		Виджеты (новости и погода) на панели задач	Спросить клиента: кто-то смотрит там погоду
+news_w10	ask	tweak	machine	set	Software\Policies\Microsoft\Windows\Windows Feeds	EnableFeeds	DWord	0		21999	Новости и погода на панели задач (Windows 10)	Спросить клиента
+copilot	ask	tweak	user	set	Software\Policies\Microsoft\Windows\WindowsCopilot	TurnOffWindowsCopilot	DWord	1	22621		Copilot (встроенная кнопка)	Приложение Copilot удаляется отдельно, в разделе «Приложения из Магазина»
+recall	ask	tweak	machine	set	Software\Policies\Microsoft\Windows\WindowsAI	DisableAIDataAnalysis	DWord	1	26100		Recall — снимки экрана для ИИ (есть только на Copilot+ ПК)	
+fast_startup	ask	tweak	machine	set	SYSTEM\CurrentControlSet\Control\Session Manager\Power	HiberbootEnabled	DWord	0			Выключить «Быстрый запуск» Windows	Помогает, если ПК глючит после включения или не ставятся обновления; включение станет чуть дольше
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender	DisableAntiSpyware	delete				Снять запрет Защитника Windows, поставленный политикой	Так делают «оптимизаторы» и вирусы; если стоит другой антивирус — Защитник сам останется в запасе
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender	DisableAntiVirus	delete					
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableRealtimeMonitoring	delete					
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableBehaviorMonitoring	delete					
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableOnAccessProtection	delete					
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableScanOnRealtimeEnable	delete					
+def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableIOAVProtection	delete					
+proxy_off	ask	security	user	fix	Software\Microsoft\Windows\CurrentVersion\Internet Settings	ProxyEnable	DWord	0			Выключить прокси-сервер	Только если клиент не знает, зачем он (подмена прокси — приём рекламных вирусов)
+pac_off	ask	security	user	fix	Software\Microsoft\Windows\CurrentVersion\Internet Settings	AutoConfigURL	delete				Убрать скрипт автонастройки прокси (PAC)	Только если клиент не знает, зачем он

@@ -1,0 +1,62 @@
+﻿kind	match	level	note
+*	winkit-?test	auto	Тестовая запись набора win-kit (только для проверки)
+*	anydesk|rustdesk|teamviewer|ultraviewer|ammyy|supremo|splashtop|parsec|screenconnect|connectwise|logmein|dwagent|dwservice|getscreen|aeroadmin|litemanager|radmin|remote utilities|ultravnc|tightvnc|realvnc|tigervnc|chrome remote	keep	Удалённый доступ — не трогаем во время сеанса (смотри отчёт: ставил ли клиент сам)
+*	onedrive|dropbox|googledrivefs|google drive|icloud|yandex\.?disk|megasync|pcloud|nextcloud|owncloud|syncthing|boxsync|box drive	keep	Облако/синхронизация файлов — не трогаем
+*	razer|logitech|lghub|logi ?options|steelseries|corsair|icue|hyperx|ngenuity|roccat|bloody|a4tech	keep	Мышь/клавиатура/гарнитура — без программы теряются настройки
+*	vpn|openvpn|wireguard|forticlient|globalprotect|anyconnect|proton|nordvpn|expressvpn|surfshark|windscribe|kaspersky secure	keep	VPN — не трогаем
+*	backup|acronis|macrium|veeam|cobian|aomei|easeus todo	keep	Резервное копирование — не трогаем
+*	bank|token|smartcard|rutoken|jacarta|etoken|cryptopro|crypto ?pro|vipnet|autenticacao|cartao de cidadao|autenticação|dnie	keep	Банк/подпись/токены — не трогаем
+start	discord	auto	Discord — запускается сам при включении; открыть вручную, когда нужен
+start	spotify	auto	Spotify — открыть вручную, когда нужна музыка
+start	\bsteam\b	auto	Steam — запускать вручную перед игрой
+start	epicgameslauncher|epic games	auto	Epic Games — запускать вручную перед игрой
+start	ea ?desktop|eadm|\borigin\b	base	EA app / Origin — игровой магазин, можно открыть вручную
+start	battle\.net	base	Battle.net — игровой магазин, можно открыть вручную
+start	galaxyclient|gog galaxy	base	GOG Galaxy — игровой магазин, можно открыть вручную
+start	ubisoft|upc\.exe	base	Ubisoft Connect — игровой магазин, можно открыть вручную
+start	\bzoom\b	auto	Zoom — открывается по ссылке на встречу сам, в автозагрузке не нужен
+start	skype	auto	Skype закрыт Microsoft в 2025 году — в автозагрузке не нужен
+start	com\.squirrel\.teams|teams\.exe|msteams	base	Microsoft Teams — запускать, когда нужна встреча (если это рабочий инструмент — оставить)
+start	microsoftedgeautolaunch	auto	Предзапуск Edge при включении ПК — Edge и так откроется, когда нужен
+start	opera.*assistant|browser_assistant	auto	Помощник Opera — фоновый процесс, не нужен
+start	yandex(?!.*disk)	auto	Фоновый запуск Яндекс.Браузера — не нужен, браузер откроется, когда нужен
+start	ituneshelper	auto	iTunes Helper — не нужен, iTunes и так увидит iPhone
+start	adobegcinvoker|adobe gc	auto	Проверка лицензии Adobe — не нужна для работы программ
+start	acrotray	base	Помощник Acrobat — не обязателен
+start	ccxprocess|creative cloud|adobe desktop service	base	Adobe Creative Cloud — можно открыть вручную
+start	ccleaner	auto	CCleaner «мониторинг/умная очистка» — фоновый процесс, не нужен
+start	driverbooster|driver booster|iobit|advancedsystemcare|asc\.exe|smart defrag	auto	«Оптимизатор» IObit — фоновая реклама и напоминания
+start	wondershare.*helper|wshelper	auto	Помощник Wondershare — фоновый процесс, не нужен
+start	wavebrowser|wave browser|webcompanion|onelaunch|shift browser|pcappstore|pc app store|mail\.ru|amigo|guard\.mail	auto	Рекламное ПО — фоновый запуск не нужен (удаление — в следующей версии)
+start	bing ?wallpaper|bingsvc	base	Bing Wallpaper — обои дня, фоновый процесс
+start	nvbackend|geforce experience|nvidia app	base	NVIDIA GeForce Experience/App — не нужно для работы видеокарты
+start	grammarly	ask	Grammarly — спросить, пользуется ли клиент
+start	docker	ask	Docker Desktop — спросить, нужен ли при включении
+start	utorrent|bittorrent|qbittorrent|transmission|mediaget	ask	Торрент — спросить, раздаёт ли что-то клиент
+start	viber|telegram|whatsapp|signal|messenger|slack|wechat	ask	Мессенджер — без автозапуска уведомления придут, только если его открыть
+start	cortana	base	Cortana — устарела, не нужна
+start	copilot	ask	Copilot — спросить, пользуется ли клиент
+start	phoneexperiencehost|yourphone|phone link	ask	Связь с телефоном — спросить, пользуется ли клиент
+start	\bkeepass|bitwarden|1password|lastpass|dashlane|nordpass	keep	Менеджер паролей — не трогаем
+task	firefox default browser agent	auto	Firefox: телеметрия «браузер по умолчанию»
+task	nvtm|nvprofileupdater|nvnodelauncher|nvtelemetry	base	Телеметрия NVIDIA
+task	ccleanerskipuac	keep	Запуск CCleaner без запроса UAC — нужен ярлыку программы
+task	ccleaner.*update	base	Обновление CCleaner — если CCleaner оставляют, лучше не отключать
+task	ccleaner	auto	CCleaner — отчёты о сбоях и фоновые задачи
+task	iobit|driver booster|advancedsystemcare|smart defrag	auto	«Оптимизатор» IObit — фоновые задачи
+task	adobegcinvoker|adobe gc	auto	Проверка лицензии Adobe
+task	onelaunch|wavebrowser|wave browser|webcompanion|shift browser|pcappstore	auto	Рекламное ПО — фоновые задачи
+task	wondershare	auto	Wondershare — фоновые задачи
+service	ccleaner|iobit|advancedsystemcare|driver booster	auto	«Оптимизатор» — служба не нужна
+service	wondershare|wsappservice|wsnativepush	auto	Wondershare — служба не нужна
+service	nvtelemetry|nvidia telemetry	auto	Телеметрия NVIDIA
+service	agsservice|agmservice|adobe genuine	auto	Adobe Genuine — проверка лицензии Adobe
+service	touchpoint|hp ?analytics|hpinsights|hp insights	auto	HP Analytics — телеметрия HP
+service	bonjour|mdnsresponder	ask	Bonjour (Apple) — нужен для AirPrint/iTunes по сети; спросить про принтер
+service	apple mobile device	ask	Нужен, чтобы ПК видел iPhone — спросить клиента
+service	ipodservice|ipod service	base	iPod Service — нужен только для старых iPod
+service	origin(client|web helper)? ?service|eabackgroundservice|ea background	base	Служба игрового магазина EA — запустится сама при игре
+service	rockstar	base	Служба Rockstar Launcher — запустится сама при игре
+service	supportassist|dell ?data ?vault	ask	Dell SupportAssist — спросить клиента
+*	update|updater|upd\.exe|autoupdate|jusched|softwareupdate|gupdate|edgeupdate|maintenance ?service|crashpad	keep	Обновлятель/служебное — нужно для безопасности
+*	realtek|rtkaud|rthdvcpl|synaptics|syntp|\belan|etdctrl|\balps\b|apoint|dolby|\bdts\b|nahimic|waves|maxxaudio|conexant|smartaudio|igfx|\bintel|\bamd\b|radeon|\bati\b|nvidia|nvcpl|bluetooth|btvstack|\bwlan|wifi|wi-fi|hotkey|\bfn\b|touchpad|lenovo|vantage|\bhp\b|hpqtra|dell|asus|armoury|\bacer\b|\bmsi\b|dragon center|samsung|huawei|pcmanager|xiaomi|toshiba|fujitsu|sony|printer|epson|canon|brother|kyocera|xerox|ricoh|konica|\bscan	keep	Драйвер/железо/производитель — не трогаем

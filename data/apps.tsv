@@ -1,0 +1,47 @@
+﻿match	level	storeid	title	note
+king\.com\..*	auto		Игры King (Candy Crush и др.) — реклама	Ставятся Windows сами, без спроса
+Microsoft\.Getstarted	auto		«Советы» Windows	
+Microsoft\.WindowsFeedbackHub	auto	9NBLGGH4R32N	Центр отзывов	
+Microsoft\.MixedReality\.Portal	auto	9NG1H8B3ZC7M	Портал смешанной реальности	Нужен только для VR-шлемов
+Microsoft\.(3DBuilder|Print3D)	auto		3D Builder / Print 3D	
+Microsoft\.Microsoft3DViewer	auto	9NBLGGH42THS	Средство 3D-просмотра	
+Microsoft\.MSPaint	base	9NBLGGH5FV99	Paint 3D (обычный Paint остаётся)	
+Microsoft\.SkypeApp	auto	9WZDNCRFJ364	Skype (закрыт Microsoft в 2025)	
+Microsoft\.549981C3F5F10	auto	9NFFX4SZZ23L	Cortana (устарела)	
+Microsoft\.(Messaging|OneConnect|Wallet)	auto		Сообщения / Мобильные тарифы / Кошелёк (устарели)	
+Microsoft\.Bing(Finance|Sports|Travel|FoodAndDrink|HealthAndFitness)	auto		Приложения Bing (финансы, спорт, путешествия…)	
+PricelinePartnerNetwork\.Booking.*	auto		Booking.com — рекламная ссылка	
+ActiproSoftwareLLC\..*	auto		Code Writer — реклама	
+Flipboard\..*	auto		Flipboard — реклама	
+Microsoft\.BingNews	base	9WZDNCRFHVFW	Новости (Microsoft Start)	
+Microsoft\.GetHelp	base	9PKDZBMV1H3T	«Техническая поддержка»	
+Microsoft\.MicrosoftOfficeHub	base	9WZDNCRD29V9	Microsoft 365 (реклама Office; сам Office не трогается)	
+Microsoft\.ZuneVideo	base	9WZDNCRFJ3P2	Кино и ТВ	Видео откроется «Медиаплеером»
+Microsoft\.WindowsMaps	base	9WZDNCRDTBVB	Карты Windows	
+Microsoft\.People	base		Люди (устарело)	
+microsoft\.windowscommunicationsapps	base	9WZDNCRFHVQM	Почта и Календарь (старые, закрыты Microsoft)	Если клиент ими пользуется — сначала перенести на Outlook
+MicrosoftTeams	base		Teams (личный чат Windows 11)	
+Microsoft\.PowerAutomateDesktop	base	9NFTCH6J7FHV	Power Automate	
+Microsoft\.Windows\.DevHome	base		Dev Home (закрыт Microsoft)	
+Microsoft\.BingSearch	base		Поиск Bing (приложение)	
+AdobeSystemsIncorporated\.AdobePhotoshopExpress	base		Photoshop Express (предустановлен)	
+Duolingo.*	base		Duolingo (предустановлен)	
+5A894077\.McAfeeSecurity	base		McAfee (из Магазина, пробная)	
+AD2F1837\.(HPJumpStarts|HPPrivacySettings|HPWelcome)	base		HP: приветствие и реклама	
+Microsoft\.BingWeather	ask	9WZDNCRFJ3Q2	Погода	Спросить: многие смотрят погоду
+Microsoft\.MicrosoftSolitaireCollection	ask	9WZDNCRFHWD2	Пасьянсы (Solitaire)	Спросить: многие играют
+Microsoft\.OutlookForWindows	ask	9NRX63209R7B	Outlook (новый)	
+Clipchamp\.Clipchamp	ask	9P1J8S7CCWWT	Clipchamp (видеоредактор)	
+MSTeams	ask	XP8BT8DW290MPQ	Microsoft Teams	Рабочий инструмент — спросить
+Microsoft\.GamingApp	ask	9MV0B5HZVK9Z	Xbox (приложение)	Нужно для игр Game Pass
+Microsoft\.YourPhone	ask	9NMPJ99VJBWV	Связь с телефоном	
+Microsoft\.Todos	ask	9NBLGGH5R558	Microsoft To Do	
+Microsoft\.Copilot	ask	9NHT9RB2F4HD	Copilot	
+SpotifyAB\.SpotifyMusic	ask	9NCBCSZSJRSB	Spotify	Спросить: пользуется ли
+Disney\..*	ask	9NXQXXLFST89	Disney+	Спросить: пользуется ли
+BytedancePte\.Ltd\.TikTok	ask	9NH2GPH4JZS4	TikTok	Спросить: пользуется ли
+AmazonVideo\.PrimeVideo	ask	9P6RC76MSMMJ	Prime Video	Спросить: пользуется ли
+4DF9E0F8\.Netflix	ask	9WZDNCRFJ3TJ	Netflix	Спросить: пользуется ли
+Facebook\.Facebook	ask	9WZDNCRFJ2WL	Facebook	Спросить: пользуется ли
+Facebook\.Instagram.*	ask	9NBLGGH5L9XT	Instagram	Спросить: пользуется ли
+7EE7776C\.LinkedInforWindows	ask	9WZDNCRFJ4Q7	LinkedIn	Спросить: пользуется ли
