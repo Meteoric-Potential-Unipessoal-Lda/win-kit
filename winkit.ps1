@@ -1,6 +1,6 @@
 ﻿<#
   win-kit — набор мастера: диагностика и бережная чистка Windows 10/11
-  Версия 0.4 (2026-10-30)
+  Версия 0.5 (2026-11-09)
 
   Обычный запуск: start.bat (сам попросит права администратора) -> меню.
   Без меню (для проверки):
@@ -14,8 +14,12 @@
   (C:\ProgramData\CleanMyPC\backups), копия — в отчёте.
 #>
 param(
-  [ValidateSet('menu','gui','guitest','diag','optimize','rollback')][string]$Mode = 'menu',
+  [ValidateSet('menu','gui','guitest','diag','optimize','rollback','postcheck','update','collect')][string]$Mode = 'menu',
   [switch]$Yes,
+  [switch]$DryRun,
+  [ValidateSet('recommended','weak','office','gaming','elderly')][string]$Preset = '',
+  [string]$Include = '',
+  [ValidateSet('ru','uk','en','pt')][string]$Lang = '',
   [switch]$NoReboot,
   [switch]$AllowManaged,
   [switch]$CurrentUser,
@@ -25,7 +29,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$script:Version = '0.4.1'
+$script:Version = '0.5'
 $script:Root = $PSScriptRoot
 if (-not $script:Root -and $WinKitRoot) { $script:Root = $WinKitRoot }
 if (-not $script:Root -and $MyInvocation.MyCommand.Path) { $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -41,6 +45,9 @@ $script:SigCache = @{}
 $script:Journal = $null
 $script:JournalPath = $null
 $script:SessionDir = $null
+$script:DryRun = [bool]$DryRun
+$script:FreedTotal = [long]0
+$script:Master = $null
 
 # ---------------------------------------------------------------- вывод
 
@@ -65,7 +72,7 @@ function Ask([string]$q) {
 function Is-Yes([string]$a) { return (@('y','yes','д','да','da','н','s','sim','si') -contains $a) }
 function Fmt-GB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N1} ГБ' -f ([double]$bytes / 1GB)) }
 function Fmt-MB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N0} МБ' -f ([double]$bytes / 1MB)) }
-function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; if ($bytes -ge 1MB) { return (Fmt-MB $bytes) }; return ('{0:N0} КБ' -f [math]::Max(1, [math]::Ceiling([double]$bytes / 1KB))) }
+function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; if ($bytes -ge 1MB) { return (Fmt-MB $bytes) }; if ($bytes -le 0) { return '0 КБ' }; return ('{0:N0} КБ' -f [math]::Max(1, [math]::Ceiling([double]$bytes / 1KB))) }
 
 function Test-Admin {
   try {
@@ -975,6 +982,7 @@ function Invoke-Diagnostics {
     @('загрузки', { $script:OldDl = Get-OldDownloads }),
     @('автозагрузка', { $script:Startup = Get-StartupItems; $script:Tasks = Get-ThirdPartyTasks; $script:Services = Get-ThirdPartyServices }),
     @('безопасность', { $script:Sec = Get-SecurityInfo; $script:Susp = Find-Suspicious $script:Startup $script:Tasks; $script:Pups = Find-Pups $script:Programs }),
+    @('безопасность: подробно', { $script:SecX = Get-SecurityExtra }),
     @('место на диске', { $script:Clean = Get-CleanTargets; Measure-CleanTargets $script:Clean }),
     @('что занимает место', { $script:Space = $null; $c = @($script:Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1; if ($c -and ($c.FreePct -lt 20 -or $c.Free -lt 40GB)) { $script:Space = Get-SpaceUsage }
       # Windows.old: если общий подсчёт посчитал больше — берём его
@@ -990,6 +998,7 @@ function Invoke-Diagnostics {
     try { & $s[1] } catch { Note-Error ('diag ' + $s[0]) $_.Exception.Message }
   }
   $script:Findings = Get-Findings
+  try { Add-ExtraFindings $script:Findings } catch { Note-Error 'findings+' $_.Exception.Message }
 }
 
 # ================================================================ v0.3: настройки Windows, приложения Магазина, удаление программ, браузеры, место
@@ -1033,7 +1042,8 @@ function Get-TweakState {
     $g = $groups[$r.id]
     $curText = $null; if ($cur) { $curText = [string]$cur.Value }
     [void]$g.Keys.Add([pscustomobject]@{ Path = $full; Name = $r.name; Type = $r.type; Value = $r.value; Done = $done; Current = $curText })
-    if (-not $done) { $g.Pending++ }
+    # mode «with»: пишется вместе с группой, но сама по себе группу не включает
+    if (-not $done -and $r.mode -ne 'with') { $g.Pending++ }
   }
   return ,@($groups.Values)
 }
@@ -1310,6 +1320,382 @@ function Invoke-CleanMgr([string[]]$handlers) {
   }
 }
 
+# ================================================================ ЖЕЛЕЗО, СИНИЕ ЭКРАНЫ, БЕЗОПАСНОСТЬ (0.5)
+
+# коды синих экранов — простыми словами (самые частые)
+$script:BugcheckInfo = @{
+  '0x0000000A' = 'IRQL_NOT_LESS_OR_EQUAL — чаще всего драйвер (сеть, видео, антивирус) или память'
+  '0x00000019' = 'BAD_POOL_HEADER — драйвер или оперативная память'
+  '0x0000001A' = 'MEMORY_MANAGEMENT — оперативная память или драйвер; проверить память'
+  '0x0000001E' = 'KMODE_EXCEPTION_NOT_HANDLED — ошибка драйвера'
+  '0x0000003B' = 'SYSTEM_SERVICE_EXCEPTION — драйвер (часто видео) или повреждённые системные файлы'
+  '0x00000050' = 'PAGE_FAULT_IN_NONPAGED_AREA — память, драйвер или антивирус'
+  '0x00000077' = 'KERNEL_STACK_INPAGE_ERROR — диск или память'
+  '0x0000007A' = 'KERNEL_DATA_INPAGE_ERROR — диск (плохие сектора) или кабель/контроллер'
+  '0x0000007E' = 'SYSTEM_THREAD_EXCEPTION_NOT_HANDLED — драйвер'
+  '0x0000007F' = 'UNEXPECTED_KERNEL_MODE_TRAP — железо (память, перегрев) или драйвер'
+  '0x0000009F' = 'DRIVER_POWER_STATE_FAILURE — драйвер при сне/пробуждении (часто Wi-Fi, видео, USB)'
+  '0x000000BE' = 'ATTEMPTED_WRITE_TO_READONLY_MEMORY — драйвер'
+  '0x000000C2' = 'BAD_POOL_CALLER — драйвер'
+  '0x000000C5' = 'DRIVER_CORRUPTED_EXPOOL — драйвер'
+  '0x000000D1' = 'DRIVER_IRQL_NOT_LESS_OR_EQUAL — драйвер (часто сеть или Wi-Fi)'
+  '0x000000EA' = 'THREAD_STUCK_IN_DEVICE_DRIVER — видеокарта или её драйвер'
+  '0x000000EF' = 'CRITICAL_PROCESS_DIED — повреждение системы или диска (sfc /scannow, проверить диск)'
+  '0x000000F4' = 'CRITICAL_OBJECT_TERMINATION — диск или кабель/контроллер'
+  '0x00000101' = 'CLOCK_WATCHDOG_TIMEOUT — процессор: перегрев, разгон, BIOS'
+  '0x00000109' = 'CRITICAL_STRUCTURE_CORRUPTION — драйвер, память или «взломанные» программы'
+  '0x00000116' = 'VIDEO_TDR_FAILURE — видеокарта или её драйвер'
+  '0x00000117' = 'VIDEO_TDR_TIMEOUT_DETECTED — видеокарта или её драйвер'
+  '0x00000124' = 'WHEA_UNCORRECTABLE_ERROR — аппаратная ошибка: перегрев, питание, процессор, память'
+  '0x0000012B' = 'FAULTY_HARDWARE_CORRUPTED_PAGE — неисправная оперативная память'
+  '0x00000133' = 'DPC_WATCHDOG_VIOLATION — драйвер (часто SSD/SATA или сеть)'
+  '0x00000139' = 'KERNEL_SECURITY_CHECK_FAILURE — драйвер или память'
+  '0x0000013A' = 'KERNEL_MODE_HEAP_CORRUPTION — драйвер (часто видео)'
+  '0x00000154' = 'UNEXPECTED_STORE_EXCEPTION — диск (SSD) или его драйвер'
+  '0x000001CA' = 'SYNTHETIC_WATCHDOG_TIMEOUT — зависание системы (драйвер или железо)'
+}
+
+function Get-BugcheckCode([string]$text) {
+  $m = [regex]::Match([string]$text, '0x[0-9A-Fa-f]{1,8}\b')
+  if (-not $m.Success) { return $null }
+  try { return ('0x{0:X8}' -f [Convert]::ToUInt32($m.Value.Substring(2), 16)) } catch { return $null }
+}
+
+function Get-BugcheckSummary {
+  $res = [ordered]@{}
+  if (-not $script:Stab) { return ,@() }
+  foreach ($b in @($script:Stab.BugChecks)) {
+    if (-not $b) { continue }
+    $c = Get-BugcheckCode $b.Text; if (-not $c) { $c = '?' }
+    if (-not $res.Contains($c)) { $res[$c] = [pscustomobject]@{ Code = $c; Count = 0; Last = $b.Time; Meaning = [string]$script:BugcheckInfo[$c] } }
+    $res[$c].Count++
+  }
+  return ,@($res.Values)
+}
+
+# ---------------------------------------------------------------- безопасность: дополнительные проверки
+
+# политики браузеров, которыми «угонщики» подменяют поиск/стартовую и ставят расширения
+$script:BrowserPolicyKeys = @(
+  @{ B = 'Chrome'; K = 'Software\Policies\Google\Chrome' },
+  @{ B = 'Edge'; K = 'Software\Policies\Microsoft\Edge' },
+  @{ B = 'Brave'; K = 'Software\Policies\BraveSoftware\Brave' },
+  @{ B = 'Яндекс'; K = 'Software\Policies\YandexBrowser' }
+)
+$script:BrowserPolicyValues = '^(DefaultSearchProvider(Enabled|SearchURL|Name|Keyword|SuggestURL|IconURL|NewTabURL)|HomepageLocation|HomepageIsNewTabPage|NewTabPageLocation|RestoreOnStartup)$'
+$script:TweakKeyAllow += @(
+  'Software\\Policies\\(Google\\Chrome|Microsoft\\Edge|BraveSoftware\\Brave|YandexBrowser)(\\(RestoreOnStartupURLs|ExtensionInstallForcelist))?',
+  'Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy',
+  'Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System',
+  'SYSTEM\\CurrentControlSet\\Control\\Terminal Server'
+)
+
+function Get-BrowserPolicies {
+  $res = New-Object System.Collections.ArrayList
+  $roots = @(@{ S = 'все'; R = 'Registry::HKEY_LOCAL_MACHINE' })
+  if ($script:User.Sid) { $roots += @{ S = 'пользователь'; R = "Registry::HKEY_USERS\$($script:User.Sid)" } }
+  foreach ($rt in $roots) {
+    foreach ($bk in $script:BrowserPolicyKeys) {
+      $base = $rt.R + '\' + $bk.K
+      $k = Get-Item -LiteralPath $base -ErrorAction SilentlyContinue
+      if ($k) {
+        foreach ($n in @($k.GetValueNames())) {
+          if ($n -match $script:BrowserPolicyValues) { [void]$res.Add([pscustomobject]@{ Browser = $bk.B; Scope = $rt.S; Path = $base; Name = $n; Value = [string]$k.GetValue($n) }) }
+        }
+      }
+      foreach ($sub in @('RestoreOnStartupURLs', 'ExtensionInstallForcelist')) {
+        $sk = Get-Item -LiteralPath ($base + '\' + $sub) -ErrorAction SilentlyContinue
+        if (-not $sk) { continue }
+        foreach ($n in @($sk.GetValueNames())) { if ($n) { [void]$res.Add([pscustomobject]@{ Browser = $bk.B; Scope = $rt.S; Path = ($base + '\' + $sub); Name = $n; Value = [string]$sk.GetValue($n) }) } }
+      }
+    }
+  }
+  return ,$res
+}
+
+# строки hosts, которые ПЕРЕНАПРАВЛЯЮТ сайты (а не блокируют) — так подменяют банки и соцсети
+function Get-HostsHijack($lines) {
+  $res = New-Object System.Collections.ArrayList
+  foreach ($l in @($lines)) {
+    if (-not $l) { continue }
+    $t = ([string]$l -replace '#.*$', '').Trim()
+    if (-not $t) { continue }
+    $parts = @($t -split '\s+')
+    if ($parts.Count -lt 2) { continue }
+    $ip = $parts[0]
+    if ($ip -match '^(127\.|0\.0\.0\.0$|::1?$|0:0:0:0:0:0:0:[01]$)') { continue }
+    foreach ($h in $parts[1..($parts.Count - 1)]) {
+      if ($h -notmatch '\.' -or $h -match '(?i)\.(local|lan|home|internal|localdomain|intranet|corp|test)$') { continue }
+      [void]$res.Add([pscustomobject]@{ Ip = $ip; Host = $h; Line = [string]$l })
+    }
+  }
+  return ,$res
+}
+
+function Get-SecurityExtra {
+  $r = [ordered]@{ Uac = $null; UacPrompt = $null; Firewall = @(); OtherFirewall = @(); Rdp = $false; AdminEnabled = $false; Users = @(); NewUsers = @()
+                   NewRemote = @(); BadServices = @(); HostsHijack = @(); BrowserPolicies = @(); AutoLogonPassword = $false }
+  $pol = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+  $r.Uac = Get-RegData $pol 'EnableLUA'
+  $r.UacPrompt = Get-RegData $pol 'ConsentPromptBehaviorAdmin'
+  try { $r.Firewall = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Enabled = ([string]$_.Enabled -eq 'True') } }) } catch { Note-Error 'firewall' $_.Exception.Message }
+  if ($script:Sys.ProductType -eq 1) {
+    $fw = @(Try-Get { Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName FirewallProduct } 'SecurityCenter2 firewall')
+    $r.OtherFirewall = @($fw | Where-Object { $_ } | ForEach-Object { $hex = '{0:X6}' -f [int]$_.productState; if (@('10', '11') -contains $hex.Substring(2, 2)) { [string]$_.displayName } })
+  }
+  $ts = 'Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Terminal Server'
+  $r.Rdp = ((Get-RegData $ts 'fDenyTSConnections') -eq 0)
+  $wl = 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+  $r.AutoLogonPassword = ([string](Get-RegData $wl 'AutoAdminLogon') -eq '1' -and [bool](Get-RegData $wl 'DefaultPassword'))
+  try {
+    $r.Users = @(Get-LocalUser -ErrorAction Stop | Where-Object { $_.Enabled } | ForEach-Object {
+      [pscustomobject]@{ Name = [string]$_.Name; Sid = [string]$_.SID.Value; LastLogon = $_.LastLogon; NoPassword = (-not $_.PasswordRequired -and -not $_.PasswordLastSet) } })
+    $r.AdminEnabled = [bool](@($r.Users | Where-Object { $_.Sid -match '-500$' }).Count)
+  } catch { Note-Error 'LocalUser' $_.Exception.Message }
+  # учётки, созданные за 30 дней (журнал безопасности, 4720)
+  $since = (Get-Date).AddDays(-30)
+  foreach ($e in (Get-Events @{ LogName = 'Security'; Id = 4720; StartTime = $since } 20)) {
+    $d = Get-EventData $e
+    $n = $d['TargetUserName']; if ($n) { $r.NewUsers += [pscustomobject]@{ Name = [string]$n; Time = $e.TimeCreated } }
+  }
+  # программы удалённого доступа, поставленные за 30 дней
+  $rem = @((Read-Tsv 'pup.tsv') | Where-Object { $_.kind -eq 'remote' })
+  foreach ($p in @($script:Programs)) {
+    if (-not $p -or -not $p.Installed -or $p.Installed -lt $since) { continue }
+    foreach ($x in $rem) { try { if ($p.Name -match ('(?i)' + $x.match)) { $r.NewRemote += [pscustomobject]@{ Name = $p.Name; Installed = $p.Installed }; break } } catch {} }
+  }
+  # службы, запускающиеся из AppData/Temp/Public без подписи
+  foreach ($s in @($script:Services)) {
+    if (-not $s -or $s.StartMode -eq 'Disabled') { continue }
+    if ($s.Exe -match $script:UserDirs -or $s.Command -match $script:SuspiciousCmd) {
+      $sig = ''; try { if ($s.Exe -and (Test-Path -LiteralPath $s.Exe -PathType Leaf)) { $sig = (Get-FileSigInfo $s.Exe).Status } } catch {}
+      if ($sig -ne 'Valid') { $r.BadServices += [pscustomobject]@{ Name = $s.Name; Display = $s.Display; Command = $s.Command } }
+    }
+  }
+  if ($script:Sec) { $r.HostsHijack = Get-HostsHijack $script:Sec.Hosts }
+  $r.BrowserPolicies = Get-BrowserPolicies
+  return [pscustomobject]$r
+}
+
+function Add-ExtraFindings($f) {
+  $x = $script:SecX
+  foreach ($b in (Get-BugcheckSummary)) {
+    $m = $b.Meaning; if (-not $m) { $m = 'неизвестный код — прислать отчёт Claude' }
+    Add-F $f 'red' ('Синий экран {0} — {1} раз(а) за 30 дней' -f $b.Code, $b.Count) $m
+  }
+  if ($x) {
+    if ($x.Uac -eq 0) { Add-F $f 'red' 'Контроль учётных записей (UAC) выключен' 'Любая программа получает права администратора молча; пункт 2 включит (после перезагрузки)' }
+    elseif ($x.UacPrompt -eq 0) { Add-F $f 'yellow' 'UAC не спрашивает подтверждения (уровень «Никогда не уведомлять»)' 'Пункт 2 вернёт обычный уровень' }
+    $off = @($x.Firewall | Where-Object { -not $_.Enabled } | ForEach-Object { $_.Name })
+    if ($off.Count -and -not @($x.OtherFirewall).Count) { Add-F $f 'red' ('Брандмауэр Windows выключен: ' + ($off -join ', ')) 'Пункт 2 включит (обратимо)' }
+    if ($x.Rdp -and $script:Sys.ProductType -eq 1) { Add-F $f 'yellow' 'Включён удалённый рабочий стол Windows (RDP)' 'Если клиент не подключается к ПК сам — выключить (пункт 2, спросить)' }
+    if ($x.AdminEnabled) { Add-F $f 'yellow' 'Включена встроенная учётка «Администратор»' 'Обычно её держат выключенной; выключить вручную: «Управление компьютером» → Пользователи' }
+    if ($x.AutoLogonPassword) { Add-F $f 'yellow' 'Автовход с паролем, записанным в реестре открытым текстом' 'Лучше настроить вход по PIN; пароль виден любой программе' }
+    foreach ($u in @($x.NewUsers)) { Add-F $f 'red' ('Создана учётная запись «{0}» {1:dd.MM.yyyy}' -f $u.Name, $u.Time) 'Спросить клиента — создавал ли он её (так делают мошенники для доступа)' }
+    foreach ($p in @($x.NewRemote)) { Add-F $f 'yellow' ('Удалённый доступ поставлен недавно: {0} ({1:dd.MM.yyyy})' -f $p.Name, $p.Installed) 'Если это не ваш доступ — спросить клиента, кто ставил (мошенники «из банка»)' }
+    foreach ($s in @($x.BadServices)) { Add-F $f 'red' ('Подозрительная служба: {0}' -f $s.Display) ('Запуск из пользовательской папки без подписи: ' + $s.Command) }
+    if (@($x.HostsHijack).Count) { Add-F $f 'red' ('hosts перенаправляет сайты: ' + ((@($x.HostsHijack) | Select-Object -First 4 | ForEach-Object { $_.Host }) -join ', ')) 'Так подменяют банки и соцсети; пункт 2 уберёт перенаправления (с копией)' }
+    $bp = @($x.BrowserPolicies)
+    if ($bp.Count) {
+      $brs = (@($bp | ForEach-Object { $_.Browser } | Select-Object -Unique) -join ', ')
+      Add-F $f 'yellow' ('Браузер управляется политиками ({0}): поиск/стартовая/расширения заданы принудительно' -f $brs) 'На домашнем ПК так делают «угонщики»; пункт 2 уберёт (спросить, обратимо)'
+    }
+  }
+}
+
+# ================================================================ МАСТЕР: настройки, языки, история визитов, обновление (0.5)
+
+# ---------------------------------------------------------------- master.txt (рядом с winkit.ps1)
+
+function Get-MasterConfig {
+  $cfg = [ordered]@{ name = ''; phone = ''; telegram = ''; whatsapp = ''; email = ''; site = ''; anydesk = ''; logo = ''; lang = 'ru'; update_url = '' }
+  $p = Join-Path $script:Root 'master.txt'
+  if (Test-Path -LiteralPath $p) {
+    foreach ($l in @(Get-Content -LiteralPath $p -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+      $t = ([string]$l).TrimStart([char]0xFEFF).Trim()
+      if (-not $t -or $t.StartsWith('#')) { continue }
+      $i = $t.IndexOf('='); if ($i -lt 1) { continue }
+      $k = $t.Substring(0, $i).Trim().ToLower(); $v = $t.Substring($i + 1).Trim()
+      if ($v -match '^(.*?)\s+#') { $v = $Matches[1].Trim() }
+      $cfg[$k] = $v
+    }
+  }
+  if (@('ru', 'uk', 'en', 'pt') -notcontains $cfg.lang) { $cfg.lang = 'ru' }
+  return [pscustomobject]$cfg
+}
+
+function Test-MasterSet { $m = $script:Master; return [bool]($m -and ($m.name -or $m.phone -or $m.telegram -or $m.whatsapp -or $m.email -or $m.anydesk)) }
+
+function Get-MasterContacts {
+  $m = $script:Master; $res = @()
+  if (-not $m) { return ,$res }
+  if ($m.phone) { $res += [pscustomobject]@{ K = (T 'Телефон'); V = $m.phone } }
+  if ($m.telegram) { $res += [pscustomobject]@{ K = 'Telegram'; V = $m.telegram } }
+  if ($m.whatsapp) { $res += [pscustomobject]@{ K = 'WhatsApp'; V = $m.whatsapp } }
+  if ($m.email) { $res += [pscustomobject]@{ K = 'E-mail'; V = $m.email } }
+  if ($m.site) { $res += [pscustomobject]@{ K = (T 'Сайт'); V = $m.site } }
+  if ($m.anydesk) { $res += [pscustomobject]@{ K = 'AnyDesk'; V = $m.anydesk } }
+  return ,$res
+}
+
+# ---------------------------------------------------------------- языки (data\lang.tsv: ru, uk, en, pt)
+
+$script:Lang = 'ru'
+$script:Tr = @{}
+function Set-Lang([string]$lang) {
+  if (@('ru', 'uk', 'en', 'pt') -notcontains $lang) { $lang = 'ru' }
+  $script:Lang = $lang; $script:Tr = @{}
+  if ($lang -eq 'ru') { return }
+  $p = Join-Path $script:Root 'data\lang.tsv'
+  if (-not (Test-Path -LiteralPath $p)) { Note-Error 'lang' 'нет data\lang.tsv'; return }
+  $lines = @(Get-Content -LiteralPath $p -Encoding UTF8)
+  if ($lines.Count -lt 2) { return }
+  $hdr = @(($lines[0].TrimStart([char]0xFEFF)) -split "`t")
+  $col = [array]::IndexOf($hdr, $lang)
+  if ($col -lt 1) { return }
+  for ($i = 1; $i -lt $lines.Count; $i++) {
+    $c = $lines[$i] -split "`t"
+    if ($c.Count -gt $col -and $c[0] -and $c[$col]) { $script:Tr[$c[0]] = $c[$col] }
+  }
+}
+function T([string]$s) {
+  if ($script:Lang -eq 'ru' -or -not $s) { return $s }
+  $v = $script:Tr[$s]; if ($v) { return $v }
+  return $s
+}
+
+# ---------------------------------------------------------------- история визитов (на ПК клиента)
+
+function Get-PcId {
+  $g = Get-RegData 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography' 'MachineGuid'
+  if (-not $g) { $g = $env:COMPUTERNAME }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$g))
+  return (-join ($h[0..3] | ForEach-Object { $_.ToString('x2') }))
+}
+
+function Get-History {
+  $p = Join-Path $script:StateDir 'history.json'
+  $arr = @()
+  try { if (Test-Path -LiteralPath $p) { foreach ($i in ((Get-Content -LiteralPath $p -Raw -Encoding UTF8) | ConvertFrom-Json)) { if ($i) { $arr += $i } } } } catch {}
+  return ,$arr
+}
+
+function Add-HistoryVisit([string]$kind, $extra) {
+  try {
+    New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+    $v = [ordered]@{ time = (Get-Date).ToString('s'); kind = $kind; kit = $script:Version; master = [string]$script:Master.name }
+    if ($extra) { foreach ($k in $extra.Keys) { $v[$k] = $extra[$k] } }
+    $h = (Get-History) + @([pscustomobject]$v)
+    if ($h.Count -gt 100) { $h = $h[($h.Count - 100)..($h.Count - 1)] }
+    [IO.File]::WriteAllText((Join-Path $script:StateDir 'history.json'), (ConvertTo-Json -InputObject @($h) -Depth 5), $script:Utf8Bom)
+  } catch { Note-Error 'history' $_.Exception.Message }
+}
+
+# ---------------------------------------------------------------- автообновление набора (update_url -> version.json)
+
+function Compare-KitVersion([string]$a, [string]$b) {
+  # -1: a<b, 0: равны, 1: a>b ; «0.5» == «0.5.0»
+  $pa = @(([string]$a).Trim() -split '\.' | ForEach-Object { $n = 0; [void][int]::TryParse(($_ -replace '\D', ''), [ref]$n); $n })
+  $pb = @(([string]$b).Trim() -split '\.' | ForEach-Object { $n = 0; [void][int]::TryParse(($_ -replace '\D', ''), [ref]$n); $n })
+  for ($i = 0; $i -lt [math]::Max($pa.Count, $pb.Count); $i++) {
+    $x = $(if ($i -lt $pa.Count) { $pa[$i] } else { 0 }); $y = $(if ($i -lt $pb.Count) { $pb[$i] } else { 0 })
+    if ($x -lt $y) { return -1 }; if ($x -gt $y) { return 1 }
+  }
+  return 0
+}
+
+function Get-KitUpdate {
+  $u = [string]$script:Master.update_url
+  if (-not $u -or $u -notmatch '^https://') { return $null }
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $r = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
+    $txt = $r.Content; if ($txt -is [byte[]]) { $txt = [Text.Encoding]::UTF8.GetString($txt) }
+    $j = ([string]$txt).TrimStart([char]0xFEFF) | ConvertFrom-Json
+    if (-not $j.version -or -not $j.url -or -not $j.sha256) { return $null }
+    if ((Compare-KitVersion $j.version $script:Version) -le 0) { return $null }
+    if ([string]$j.url -notmatch '^https://') { return $null }
+    return [pscustomobject]@{ Version = [string]$j.version; Url = [string]$j.url; Sha256 = ([string]$j.sha256).ToLower(); Notes = [string]$j.notes }
+  } catch { Note-Error 'update check' $_.Exception.Message; return $null }
+}
+
+function Install-KitUpdate($upd) {
+  $tmp = Join-Path $env:TEMP ('winkit_update_' + $PID)
+  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+  $zip = Join-Path $tmp 'kit.zip'
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  Invoke-WebRequest -Uri $upd.Url -OutFile $zip -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+  $h = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLower()
+  if ($h -ne $upd.Sha256) { throw ('контрольная сумма не совпала — обновление не установлено (' + $h + ')') }
+  $ex = Join-Path $tmp 'x'
+  Expand-Archive -LiteralPath $zip -DestinationPath $ex -Force
+  $src = $ex; if (-not (Test-Path -LiteralPath (Join-Path $src 'winkit.ps1'))) { $d = @(Get-ChildItem -LiteralPath $ex -Directory) | Select-Object -First 1; if ($d) { $src = $d.FullName } }
+  if (-not (Test-Path -LiteralPath (Join-Path $src 'winkit.ps1'))) { throw 'в архиве нет winkit.ps1' }
+  # старая версия — рядом, на случай отката
+  $bk = Join-Path $script:Root ('_previous\' + $script:Version)
+  New-Item -ItemType Directory -Force -Path $bk | Out-Null
+  foreach ($f in @('winkit.ps1', 'start.bat', 'start-console.bat', 'README.txt')) { $s = Join-Path $script:Root $f; if (Test-Path -LiteralPath $s) { Copy-Item -LiteralPath $s -Destination $bk -Force } }
+  if (Test-Path -LiteralPath (Join-Path $script:Root 'data')) { Copy-Item -LiteralPath (Join-Path $script:Root 'data') -Destination $bk -Recurse -Force }
+  foreach ($it in @(Get-ChildItem -LiteralPath $src -Recurse -File)) {
+    $rel = $it.FullName.Substring($src.Length).TrimStart('\')
+    if ($rel -ieq 'master.txt' -and (Test-Path -LiteralPath (Join-Path $script:Root 'master.txt'))) { continue }   # настройки мастера не трогаем
+    if ($rel -match '^(reports|_update|_previous)\\') { continue }
+    $dst = Join-Path $script:Root $rel
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+    Copy-Item -LiteralPath $it.FullName -Destination $dst -Force
+  }
+  try { Get-ChildItem -LiteralPath $script:Root -Recurse -File -Include *.ps1, *.bat | Unblock-File -ErrorAction SilentlyContinue } catch {}
+  Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+  return $upd.Version
+}
+
+function Run-Update {
+  $upd = Get-KitUpdate
+  if (-not $upd) { Say 'Обновлений нет (или в master.txt не указан update_url).' 'Green'; return }
+  Say ('Есть версия {0}: {1}' -f $upd.Version, $upd.Notes) 'Cyan'
+  if ($script:Interactive) { $a = Ask 'Установить? (y/n)'; if (-not (Is-Yes $a)) { return } }
+  try { $v = Install-KitUpdate $upd; Say ('Установлена версия ' + $v + '. Запустите start.bat заново.') 'Green' }
+  catch { Say ('Обновление не установлено: ' + $_.Exception.Message) 'Red'; $script:ExitCode = 1 }
+}
+
+# ---------------------------------------------------------------- неизвестные программы из всех отчётов (для пополнения startup.tsv)
+
+function Run-Collect {
+  $dir = $ReportDir; if (-not $dir) { $dir = Join-Path $script:Root 'reports' }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+  $rules = Read-Tsv 'startup.tsv'
+  $agg = @{}
+  $zips = @(Get-ChildItem -LiteralPath $dir -Filter '*_diag_*.zip' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $dir -Filter '*_optimize_*.zip' -ErrorAction SilentlyContinue)
+  foreach ($z in $zips) {
+    try {
+      $a = [IO.Compression.ZipFile]::OpenRead($z.FullName)
+      try {
+        $e = $a.GetEntry('diag.json'); if (-not $e) { continue }
+        $sr = New-Object IO.StreamReader($e.Open(), [Text.Encoding]::UTF8); $txt = $sr.ReadToEnd(); $sr.Close()
+      } finally { $a.Dispose() }
+      $j = $txt.TrimStart([char]0xFEFF) | ConvertFrom-Json
+      $pc = [string]$j.pcId; if (-not $pc) { $pc = $z.Name }
+      foreach ($s in @($j.startup)) {
+        if (-not $s) { continue }
+        $c = Classify ('{0} | {1} | {2}' -f $s.Name, $s.Command, $s.Publisher) 'start' $s $rules
+        if ($c.Level -ne 'ask' -or $c.Note -notmatch 'Неизвестная') { continue }
+        $key = ([string]$s.Name).ToLower()
+        if (-not $agg.ContainsKey($key)) { $agg[$key] = [pscustomobject]@{ Name = $s.Name; Publisher = $s.Publisher; Command = $s.Command; Pcs = @{} } }
+        $agg[$key].Pcs[$pc] = 1
+      }
+    } catch { Note-Error ('collect ' + $z.Name) $_.Exception.Message }
+  }
+  $rows = @($agg.Values | Sort-Object { $_.Pcs.Count } -Descending)
+  $out = Join-Path $dir 'unknown-startup.tsv'
+  $lines = @("pcs`tname`tpublisher`tcommand") + @($rows | ForEach-Object { ("{0}`t{1}`t{2}`t{3}" -f $_.Pcs.Count, $_.Name, $_.Publisher, $_.Command) })
+  [IO.File]::WriteAllText($out, ($lines -join "`r`n"), $script:Utf8Bom)
+  Say ('Отчётов: {0}; неизвестных программ автозагрузки: {1}' -f $zips.Count, $rows.Count) 'Cyan'
+  foreach ($r in @($rows | Select-Object -First 20)) { Say ('  {0,3} ПК  {1}  ({2})' -f $r.Pcs.Count, $r.Name, $r.Publisher) }
+  Say ('Список: ' + $out + ' — пришлите его Claude, чтобы пополнить data\startup.tsv') 'Green'
+  return $out
+}
+
 # ================================================================ ВЫВОДЫ И ОТЧЁТ
 
 function Add-F($list, [string]$sev, [string]$text, [string]$advice = '') {
@@ -1534,6 +1920,7 @@ function Save-DiagReport([string]$dir) {
     startup = $script:Startup; tasks = $script:Tasks; services = $script:Services; clean = $script:Clean; programs = $script:Programs
     tweaks = $script:Tweaks; storeApps = $script:Apps; browsers = $script:Browsers; forcedExtensions = $script:ForcedExt; hijackedShortcuts = $script:Shortcuts; oldDownloads = $script:OldDl
     findings = $script:Findings; metricsHistory = (Get-MetricsHistory)
+    pcId = (Get-PcId); securityExtra = $script:SecX; bugchecks = (Get-BugcheckSummary); history = (Get-History)
   }
   Write-TextFile (Join-Path $dir 'diag.json') (ConvertTo-Json -InputObject $data -Depth 6)
 
@@ -1628,6 +2015,248 @@ function Run-Diag {
   Save-Metrics (Get-Metrics 'diag')
   Save-DiagReport $dir
   Close-Session $dir
+}
+
+# ================================================================ ОТЧЁТ КЛИЕНТУ (HTML + PDF) (0.5)
+
+$script:ClientCat = @{ startup = 'Автозагрузка'; uwp = 'Автозагрузка'; task = 'Фоновая задача'; service = 'Служба'; tweak = 'Настройка Windows'; appx = 'Приложение удалено'
+  uninstall = 'Программа удалена'; clean = 'Очистка'; power = 'Электропитание'; hibernate = 'Электропитание'; trim = 'Обслуживание SSD'; scan = 'Проверка на вирусы'
+  restore = 'Точка восстановления'; browserpol = 'Безопасность браузера'; hosts = 'Безопасность'; firewall = 'Безопасность'; helplink = 'Ярлык «Помощь мастера»' }
+
+function Fmt-SizeT($b) { return ((Fmt-Size $b) -replace 'ГБ', (T 'ГБ') -replace 'МБ', (T 'МБ') -replace 'КБ', (T 'КБ')) }
+function Get-HtmlEnc([string]$s) { return [Net.WebUtility]::HtmlEncode([string]$s) }
+
+function Get-ItemClientTitle($it) {
+  $t = [string]$it.Title
+  if ($it.Kind -eq 'clean' -and $it.Data -and $it.Data.Title) { $t = (T (([string]$it.Data.Title) -replace '\s*\(.*\)\s*$', '')) }
+  elseif ($it.Kind -eq 'tweak' -or $it.Kind -eq 'appx') { $t = (T $t) }
+  elseif ($it.Kind -eq 'hibernate') { $t = (T 'Гибернация выключена') }
+  elseif ($it.Kind -eq 'power') { $t = (T 'Схема «Сбалансированная» вместо «Экономии энергии»') }
+  elseif ($it.Kind -eq 'restore') { $t = (T 'Создана перед изменениями') }
+  elseif ($it.Kind -eq 'scan') { $t = $(if ($it.Result -eq 'чисто') { T 'Угроз не найдено' } else { T 'Найдены угрозы — отправлены в карантин' }) }
+  elseif ($it.Kind -eq 'trim') { $t = 'TRIM' }
+  return $t
+}
+
+function Get-ClientRecs {
+  $r = New-Object System.Collections.ArrayList
+  $s = $script:Sys
+  if ($s -and -not $s.IsWin11 -and $s.ProductType -eq 1) {
+    if ($script:Win11 -and $script:Win11.Verdict -notmatch 'нельзя') { [void]$r.Add((T 'Обновить Windows 10 до Windows 11 (бесплатно) — Windows 10 больше не получает обновлений безопасности.')) }
+    else { [void]$r.Add((T 'Windows 10 больше не получает обновлений безопасности, а этот компьютер не подходит для Windows 11 — стоит подумать о замене.')) }
+  }
+  if ($s -and $s.RamGB -and $s.RamGB -lt 7.5) { [void]$r.Add((T 'Добавить оперативной памяти до 8–16 ГБ — компьютер станет заметно быстрее.')) }
+  $d = @($script:Disks | Where-Object { $_.System }) | Select-Object -First 1
+  if ($d -and $d.Type -eq 'HDD') { [void]$r.Add((T 'Поставить SSD вместо жёсткого диска — включение и программы станут в 3–5 раз быстрее.')) }
+  if ($d -and $null -ne $d.Wear -and $d.Wear -ge 70) { [void]$r.Add((T 'Диск сильно изношен — сделать копию важных файлов и заменить диск.')) }
+  if ($d -and $d.TempC -and $d.TempC -ge 60) { [void]$r.Add((T 'Диск сильно греется — почистить компьютер от пыли, проверить охлаждение.')) }
+  foreach ($b in @($script:Battery)) { if ($b -and $b.WearPct -ge 40) { [void]$r.Add((T 'Батарея держит заметно меньше нового — её можно заменить.')); break } }
+  $c = @($script:Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1
+  if ($c -and ($c.FreePct -lt 15 -or $c.Free -lt 20GB)) { [void]$r.Add((T 'Мало места на диске — перенести фото и видео на внешний диск или в облако.')) }
+  $hw = @((Get-BugcheckSummary) | Where-Object { @('0x00000124', '0x00000101', '0x0000012B', '0x0000007A', '0x000000F4', '0x00000154', '0x0000001A', '0x00000077') -contains $_.Code })
+  if ($hw.Count) { [void]$r.Add((T 'Синие экраны указывают на возможную неисправность (память, диск или перегрев) — нужна диагностика.')) }
+  $cloud = '(?i)onedrive|google drive|dropbox|icloud|yandex\.?disk|mega|pcloud|backup|acronis|macrium|veeam|aomei|easeus'
+  if (-not @($script:Programs | Where-Object { $_.Name -match $cloud }).Count) { [void]$r.Add((T 'Настроить резервную копию важных файлов (облако или внешний диск) — на случай поломки диска или вируса.')) }
+  if (@($script:Pups | Where-Object { $_.Kind -eq 'pup' }).Count) { [void]$r.Add((T 'Не устанавливайте «оптимизаторы», «ускорители» и «чистильщики» из рекламы — они только мешают.')) }
+  [void]$r.Add((T 'Перезагружайте компьютер хотя бы раз в неделю.'))
+  [void]$r.Add((T 'Никому не давайте удалённый доступ к компьютеру по звонку «из банка» или «из поддержки» — это мошенники.'))
+  return ,$r
+}
+
+# данные для отчёта — простой объект, чтобы пересобрать отчёт после перезагрузки (проверка после обслуживания)
+function Get-ClientReportData($plan, $before, $after, [string]$stage) {
+  $s = $script:Sys
+  $d = @($script:Disks | Where-Object { $_.System }) | Select-Object -First 1
+  $done = @()
+  foreach ($it in @($plan)) {
+    if (-not $it.Checked -or [string]$it.Result -notmatch '^(ok|удалено|чисто|найдено угроз)') { continue }
+    $done += [ordered]@{ cat = [string]$script:ClientCat[[string]$it.Kind]; title = (Get-ItemClientTitle $it); kind = [string]$it.Kind }
+  }
+  $av = 'нет защиты'
+  $other = @($script:Sec.AvProducts | Where-Object { $_.Enabled -and $_.Name -notmatch 'Windows Defender|Защитник|Microsoft Defender' }) | Select-Object -First 1
+  if ($script:Sec.Defender -and $script:Sec.Defender.RealTime) { $av = 'Защитник Windows' } elseif ($other) { $av = $other.Name }
+  $find = @(@($script:Findings) | Where-Object { $_ -and $_.Sev -eq 'red' } | Select-Object -First 8 | ForEach-Object { [string]$_.Text })
+  $m = $script:Master
+  return [ordered]@{
+    created = (Get-Date).ToString('s'); stage = $stage; lang = $script:Lang; kit = $script:Version; pcId = (Get-PcId)
+    pc = [ordered]@{ model = (('{0} {1}' -f $s.Manufacturer, $s.Model) -replace '\s+', ' ').Trim(); os = ('{0} {1}' -f $s.Caption, $s.DisplayVersion); build = [string]$s.Build
+                     cpu = (($s.Cpu -replace '\(R\)|\(TM\)|CPU|Processor|@.*', '' -replace '\s+', ' ').Trim()); ram = $s.RamGB; win11 = [bool]$s.IsWin11; activation = [string]$script:Activation }
+    master = [ordered]@{ name = [string]$m.name; contacts = @((Get-MasterContacts) | ForEach-Object { [ordered]@{ k = $_.K; v = $_.V } }); logo = [string]$m.logo }
+    before = $before; after = $after
+    done = $done; freed = [long]$script:FreedTotal
+    disk = $(if ($d) { [ordered]@{ type = [string]$d.Type; wear = $d.Wear; temp = $d.TempC; model = [string]$d.Name; health = [string]$d.Health } } else { $null })
+    battery = @(@($script:Battery) | Where-Object { $_ } | ForEach-Object { $_.WearPct })
+    bsod = @((Get-BugcheckSummary) | ForEach-Object { [ordered]@{ code = $_.Code; count = $_.Count; meaning = $_.Meaning } })
+    av = $av; threats = @($script:Sec.Threats).Count; problems = $find
+    recs = @((Get-ClientRecs))
+    history = @((Get-History) | Select-Object -Last 8 | ForEach-Object { [ordered]@{ time = [string]$_.time; kind = [string]$_.kind } })
+  }
+}
+
+function Get-MetricText($v, [string]$kind) {
+  if ($null -eq $v -or [string]$v -eq '') { return '—' }
+  switch ($kind) { 'boot' { return ('{0:N0} {1}' -f [double]$v, (T 'с')) } 'gb' { return ('{0:N1} {1}' -f [double]$v, (T 'ГБ')) } 'pct' { return ('{0}%' -f $v) } default { return [string]$v } }
+}
+
+function New-ClientReportHtml($d) {
+  $E = { param($x) Get-HtmlEnc $x }
+  $lang = [string]$d.lang; if (-not $lang) { $lang = 'ru' }
+  $sb = New-Object System.Text.StringBuilder
+  $Emit = { param($x) [void]$sb.Append($x) }
+  & $Emit ('<!doctype html><html lang="' + $lang + '"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
+  & $Emit ('<title>' + (& $E (T 'Отчёт об обслуживании компьютера')) + '</title><style>')
+  & $Emit @'
+:root{--ink:#16202E;--mut:#5C6778;--line:#E3E7EE;--bg:#F5F7FA;--card:#fff;--acc:#3D6FE8;--ok:#16A36A;--warn:#D98A06;--bad:#D64545}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",Arial,sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:28px 20px 40px}
+header{display:flex;gap:18px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:22px}
+.brand{display:flex;gap:14px;align-items:center}.brand img{max-height:56px;max-width:160px}
+.logo{width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#6EA0FF,#7C5CFF);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px}
+h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 12px}.mut{color:var(--mut)}.small{font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-bottom:16px;break-inside:avoid}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.tile .v{font-size:22px;font-weight:700;margin-top:4px}.tile .v .arr{color:var(--mut);font-weight:400;margin:0 6px}.good{color:var(--ok)}
+ul{margin:0;padding-left:20px}li{margin:4px 0}
+.cat{display:inline-block;font-size:12px;color:var(--acc);background:#EAF0FE;border-radius:6px;padding:1px 8px;margin-right:8px}
+.row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:7px 0}.row:last-child{border-bottom:0}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+footer{margin-top:22px;font-size:13px;color:var(--mut)}
+@media print{body{background:#fff}.wrap{padding:0}.card,.tile{border-color:#ccc}}
+'@
+  & $Emit '</style></head><body><div class="wrap">'
+  # шапка
+  & $Emit '<header><div class="brand">'
+  $logoTag = '<div class="logo">W</div>'
+  if ($d.master.logo) {
+    $lp = [string]$d.master.logo; if (-not [IO.Path]::IsPathRooted($lp)) { $lp = Join-Path $script:Root $lp }
+    try { if (Test-Path -LiteralPath $lp) { $ext = [IO.Path]::GetExtension($lp).TrimStart('.').ToLower(); if ($ext -eq 'jpg') { $ext = 'jpeg' }; $logoTag = '<img alt="" src="data:image/' + $ext + ';base64,' + [Convert]::ToBase64String([IO.File]::ReadAllBytes($lp)) + '">' } } catch {}
+  }
+  & $Emit $logoTag
+  & $Emit ('<div><h1>' + (& $E (T 'Отчёт об обслуживании компьютера')) + '</h1><div class="mut small">' + (& $E $d.pc.model) + ' · ' + (& $E $d.pc.os) + '</div></div></div>')
+  $dt = $d.created; try { $dt = ([datetime]$d.created).ToString('dd.MM.yyyy HH:mm') } catch {}
+  & $Emit ('<div class="small mut" style="text-align:right">' + (& $E $dt))
+  if ($d.master.name) { & $Emit ('<br>' + (& $E (T 'Мастер')) + ': <b>' + (& $E $d.master.name) + '</b>') }
+  & $Emit '</div></header>'
+  if ($d.stage -eq 'after-reboot') { & $Emit ('<div class="card" style="border-color:#BFE8D3;background:#F1FBF6"><b class="ok">✓ ' + (& $E (T 'Компьютер проверен после перезагрузки — всё работает.')) + '</b></div>') }
+  # было -> стало
+  $mb = $d.before; $ma = $d.after
+  & $Emit '<div class="tiles">'
+  $tile = { param($label, $bv, $av, $kind, $lowerBetter)
+    $bt = Get-MetricText $bv $kind; $at = Get-MetricText $av $kind
+    $cls = ''
+    if ($null -ne $bv -and $null -ne $av -and [string]$bv -ne '' -and [string]$av -ne '') { if (($lowerBetter -and [double]$av -lt [double]$bv) -or (-not $lowerBetter -and [double]$av -gt [double]$bv)) { $cls = ' class="good"' } }
+    & $Emit ('<div class="tile"><div class="mut small">' + (& $E $label) + '</div><div class="v">' + (& $E $bt) + '<span class="arr">→</span><span' + $cls + '>' + (& $E $at) + '</span></div></div>')
+  }
+  if ($mb -or $ma) {
+    & $tile (T 'Свободно на диске') $mb.FreeGB $ma.FreeGB 'gb' $false
+    & $tile (T 'Программ в автозагрузке') $mb.StartupEnabled $ma.StartupEnabled 'n' $true
+    if ($mb.BootMs -or $ma.BootMs) { & $tile (T 'Время загрузки') $(if ($mb.BootMs) { [math]::Round($mb.BootMs / 1000) }) $(if ($ma.BootMs) { [math]::Round($ma.BootMs / 1000) }) 'boot' $true }
+    if ($null -ne $ma.RamIdlePct) { & $tile (T 'Занято памяти в покое') $mb.RamUsedPct $ma.RamIdlePct 'pct' $true }
+  }
+  & $Emit ('<div class="tile"><div class="mut small">' + (& $E (T 'Сделано улучшений')) + '</div><div class="v">' + @($d.done).Count + '</div></div>')
+  if ($d.freed -gt 0) { & $Emit ('<div class="tile"><div class="mut small">' + (& $E (T 'Освобождено места')) + '</div><div class="v">' + (& $E (Fmt-SizeT $d.freed)) + '</div></div>') }
+  & $Emit '</div>'
+  # что сделано
+  if (@($d.done).Count) {
+    & $Emit ('<div class="card"><h2>' + (& $E (T 'Что сделано')) + '</h2><ul>')
+    foreach ($x in @($d.done)) { & $Emit ('<li><span class="cat">' + (& $E (T $x.cat)) + '</span>' + (& $E $x.title) + '</li>') }
+    & $Emit ('</ul><p class="small mut" style="margin:10px 0 0">' + (& $E (T 'Все изменения настроек обратимы: журнал хранится на этом компьютере, мастер может вернуть всё как было.')) + '</p></div>')
+  }
+  # состояние компьютера
+  & $Emit ('<div class="card"><h2>' + (& $E (T 'Состояние компьютера')) + '</h2>')
+  $row = { param($k, $v, $cls) & $Emit ('<div class="row"><span class="mut">' + (& $E $k) + '</span><span class="' + $cls + '">' + (& $E $v) + '</span></div>') }
+  & $row (T 'Windows') ($d.pc.os + ' · ' + (T $d.pc.activation)) $(if ($d.pc.win11) { 'ok' } else { 'warn' })
+  & $row (T 'Процессор и память') ('{0} · {1} {2}' -f $d.pc.cpu, $d.pc.ram, (T 'ГБ')) ''
+  if ($d.disk) {
+    $dv = $d.disk.type; if ($null -ne $d.disk.wear) { $dv += (' · ' + (T 'износ') + ' ' + $d.disk.wear + '%') }; if ($d.disk.temp) { $dv += (' · ' + $d.disk.temp + ' °C') }
+    & $row (T 'Диск') $dv $(if ($d.disk.wear -ge 70 -or $d.disk.type -eq 'HDD') { 'warn' } else { 'ok' })
+  }
+  foreach ($w in @($d.battery)) { if ($null -ne $w) { & $row (T 'Батарея') ((T 'износ') + ' ' + $w + '%') $(if ($w -ge 40) { 'warn' } else { 'ok' }) } }
+  & $row (T 'Антивирус') (T $d.av) $(if ($d.av -eq 'нет защиты') { 'bad' } else { 'ok' })
+  if (@($d.bsod).Count) { foreach ($x in @($d.bsod)) { & $row ((T 'Синий экран') + ' ' + $x.code) ('{0}× — {1}' -f $x.count, $(if ($lang -eq 'ru') { $x.meaning } else { ([string]$x.meaning -replace '\s+—.*$', '') })) 'bad' } }
+  else { & $row (T 'Синие экраны за месяц') (T 'не было') 'ok' }
+  & $Emit '</div>'
+  if (@($d.problems).Count) {
+    & $Emit ('<div class="card"><h2>' + (& $E (T 'Что требует внимания')) + '</h2><ul>')
+    foreach ($x in @($d.problems)) { & $Emit ('<li class="bad">' + (& $E $x) + '</li>') }
+    & $Emit '</ul></div>'
+  }
+  if (@($d.recs).Count) {
+    & $Emit ('<div class="card"><h2>' + (& $E (T 'Советы')) + '</h2><ul>')
+    foreach ($x in @($d.recs)) { & $Emit ('<li>' + (& $E $x) + '</li>') }
+    & $Emit '</ul></div>'
+  }
+  if (@($d.history).Count -gt 1) {
+    & $Emit ('<div class="card"><h2>' + (& $E (T 'История обслуживания')) + '</h2>')
+    foreach ($h in @($d.history)) { $ht = $h.time; try { $ht = ([datetime]$h.time).ToString('dd.MM.yyyy') } catch {}; & $row $ht (T ([string]$script:VisitNames[[string]$h.kind])) '' }
+    & $Emit '</div>'
+  }
+  # контакты
+  if ($d.master.name -or @($d.master.contacts).Count) {
+    & $Emit ('<div class="card"><h2>' + (& $E (T 'Если что-то не так — свяжитесь с мастером')) + '</h2>')
+    if ($d.master.name) { & $row (T 'Мастер') $d.master.name '' }
+    foreach ($c in @($d.master.contacts)) { & $row $c.k $c.v '' }
+    & $Emit '</div>'
+  }
+  & $Emit ('<footer>win-kit ' + (& $E $d.kit) + ' · ' + (& $E (T 'Отчёт создан автоматически. Личные файлы не просматривались и не удалялись.')) + '</footer>')
+  & $Emit '</div></body></html>'
+  return $sb.ToString()
+}
+$script:VisitNames = @{ diag = 'Диагностика'; optimize = 'Обслуживание'; postcheck = 'Проверка после перезагрузки'; rollback = 'Откат изменений' }
+
+function Convert-HtmlToPdf([string]$html, [string]$pdf) {
+  $edge = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+  if (-not $edge) { return $false }
+  $prof = Join-Path $env:TEMP ('winkit_edge_' + $PID)
+  try {
+    $url = 'file:///' + ($html -replace '\\', '/')
+    $eargs = @('--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', ('--user-data-dir="' + $prof + '"'), '--no-pdf-header-footer', '--print-to-pdf-no-header', ('--print-to-pdf="' + $pdf + '"'), ('"' + $url + '"'))
+    $p = Start-Process -FilePath $edge -ArgumentList $eargs -PassThru -WindowStyle Hidden
+    if (-not $p.WaitForExit(60000)) { try { $p.Kill() } catch {} }
+    Start-Sleep -Milliseconds 500
+    return (Test-Path -LiteralPath $pdf)
+  } catch { Note-Error 'pdf' $_.Exception.Message; return $false }
+  finally { Remove-Item -LiteralPath $prof -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# пишет отчёт клиенту: в папку сеанса, в reports\ и в C:\ProgramData\CleanMyPC (последний); возвращает путь к html
+function Save-ClientReport($d, [string]$sessionDir) {
+  try {
+    $html = New-ClientReportHtml $d
+    $name = 'client_' + (Get-Date -Format 'yyyy-MM-dd_HH-mm')
+    $paths = @()
+    New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+    $main = Join-Path $script:StateDir 'client-report.html'
+    [IO.File]::WriteAllText($main, $html, (New-Object System.Text.UTF8Encoding $false))
+    [IO.File]::WriteAllText((Join-Path $script:StateDir 'client-report.json'), (ConvertTo-Json -InputObject $d -Depth 6), $script:Utf8Bom)
+    if ($sessionDir) { [IO.File]::WriteAllText((Join-Path $sessionDir 'client-report.html'), $html, (New-Object System.Text.UTF8Encoding $false)) }
+    $rd = $ReportDir; if (-not $rd) { $rd = Join-Path $script:Root 'reports' }
+    try { New-Item -ItemType Directory -Force -Path $rd | Out-Null; $out = Join-Path $rd ($name + '.html'); [IO.File]::WriteAllText($out, $html, (New-Object System.Text.UTF8Encoding $false)); $paths += $out } catch {}
+    $pdf = Join-Path $script:StateDir 'client-report.pdf'
+    if (Convert-HtmlToPdf $main $pdf) { try { if ($paths.Count) { Copy-Item -LiteralPath $pdf -Destination ([IO.Path]::ChangeExtension($paths[0], '.pdf')) -Force } } catch {} }
+    $script:ClientReport = $main
+    return $main
+  } catch { Note-Error 'client report' $_.Exception.Message; return $null }
+}
+
+# копия отчёта на рабочий стол клиента
+function Get-UserDesktop {
+  $p = $null
+  if ($script:User.Sid) { $p = Get-RegData "Registry::HKEY_USERS\$($script:User.Sid)\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" 'Desktop' }
+  if ($p) { $p = $p -ireplace '%USERPROFILE%', $script:User.Profile; $p = [Environment]::ExpandEnvironmentVariables($p) }
+  if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $script:User.Profile 'Desktop' }
+  return $p
+}
+function Copy-ClientReportToDesktop {
+  $src = Join-Path $script:StateDir 'client-report.html'
+  if (-not (Test-Path -LiteralPath $src)) { throw 'отчёта клиенту ещё нет' }
+  $desk = Get-UserDesktop
+  $nm = (T 'Отчёт об обслуживании компьютера')
+  Copy-Item -LiteralPath $src -Destination (Join-Path $desk ($nm + '.html')) -Force
+  $pdf = Join-Path $script:StateDir 'client-report.pdf'
+  if (Test-Path -LiteralPath $pdf) { Copy-Item -LiteralPath $pdf -Destination (Join-Path $desk ($nm + '.pdf')) -Force }
+  return $desk
 }
 
 # ================================================================ ОПТИМИЗАЦИЯ
@@ -1741,6 +2370,7 @@ function Build-Plan {
     if ($t.Special -eq 'telegram') { $det = 'сами чаты и файлы на серверах Telegram не пострадают' }
     [void]$p.Add((New-PlanItem 'clean' 'clean' ('{0} — {1}' -f $t.Title, (Fmt-Size $t.Size)) $det $t.Level $t $t.Size))
   }
+  try { Add-ExtraPlanItems $p } catch { Note-Error 'plan+' $_.Exception.Message }
   $sorted = New-Object System.Collections.ArrayList
   foreach ($sec in $script:SectionOrder) { foreach ($it in $p) { if ($it.Section -eq $sec) { [void]$sorted.Add($it) } } }
   $i = 1; foreach ($it in $sorted) { $it.Id = $i; $i++ }
@@ -1827,7 +2457,7 @@ function Invoke-PlanItem($it, [string]$batch) {
       & powercfg.exe /hibernate off | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "powercfg вернул $LASTEXITCODE" }
     }
-    default { throw ('неизвестный вид: ' + $it.Kind) }
+    default { if ($script:ExtraKinds -contains $it.Kind) { Invoke-ExtraPlanItem $it $batch } else { throw ('неизвестный вид: ' + $it.Kind) } }
   }
 }
 
@@ -1937,7 +2567,7 @@ function Undo-Entry($e) {
       & powercfg.exe /setactive $e.old | Out-Null
       if ($LASTEXITCODE -ne 0) { throw "powercfg вернул $LASTEXITCODE" }
     }
-    default { throw ('неизвестная запись: ' + $e.type) }
+    default { Undo-ExtraEntry $e }
   }
 }
 
@@ -1964,6 +2594,8 @@ function Undo-Journal([string]$path, $pick) {
 }
 
 function Invoke-Plan($plan) {
+  $script:FreedTotal = [long]0
+  if ($script:DryRun) { Invoke-DryRun $plan; return }
   $sel = @($plan | Where-Object { $_.Checked })
   # 1. точка восстановления
   foreach ($it in @($sel | Where-Object { $_.Kind -eq 'restore' })) {
@@ -1978,13 +2610,14 @@ function Invoke-Plan($plan) {
     }
   }
   # 2. обратимые изменения — партиями по 5 с проверкой
-  $jItems = @($sel | Where-Object { @('startup', 'uwp', 'task', 'service', 'power', 'tweak', 'appx', 'hibernate') -contains $_.Kind })
+  $jItems = @($sel | Where-Object { (@('startup', 'uwp', 'task', 'service', 'power', 'tweak', 'appx', 'hibernate') + $script:ExtraKinds) -contains $_.Kind })
   $uItems = @($sel | Where-Object { $_.Kind -eq 'uninstall' })
   $stopped = $false
   if ($jItems.Count -or $uItems.Count) {
     Start-Journal
     Say ('  Журнал отката: ' + $script:JournalPath) 'DarkGray'
     $base = Get-Health
+    $script:HealthBase = Get-HealthEx
     $bn = 0
     for ($i = 0; $i -lt $jItems.Count; $i += 5) {
       $bn++; $batch = "b$bn"
@@ -2027,6 +2660,7 @@ function Invoke-Plan($plan) {
       Say ('  [ok] {0}: освобождено {1}' -f $it.Data.Title, (Fmt-Size $r.Freed)) 'Green'
     } catch { $it.Result = 'ошибка: ' + $_.Exception.Message; Note-Error ('clean ' + $it.Data.Key) $_.Exception.Message; Say ('  [пропущено] ' + $it.Data.Title + ' — ' + $_.Exception.Message) 'Yellow' }
   }
+  $script:FreedTotal = $total
   if ($total -gt 0) { Say ('  Всего освобождено: ' + (Fmt-Size $total)) 'Green' }
   # 5. проверка Защитником (последней — долгая)
   foreach ($it in @($sel | Where-Object { $_.Kind -eq 'scan' })) {
@@ -2058,11 +2692,14 @@ function Run-Optimize {
   }
   $plan = Build-Plan
   if ($plan.Count -eq 0) { Say 'Предложить нечего — всё уже в порядке.' 'Green'; Close-Session $dir; return }
+  if ($Preset) { Set-PlanPreset $plan $Preset }
+  if ($Include) { foreach ($it in $plan) { if ($it.Title -match $Include) { $it.Checked = $true } } }
   $go = Edit-Plan $plan
   if (-not $go) { Say 'Отменено — ничего не изменено.' 'Yellow'; Close-Session $dir; return }
-  Head 'Выполняю'
-  Save-Metrics $before
+  Head $(if ($script:DryRun) { 'Только посмотреть' } else { 'Выполняю' })
+  if (-not $script:DryRun) { Save-Metrics $before }
   Invoke-Plan $plan
+  Complete-Optimize $plan $before $dir
   $lines = @('win-kit ' + $script:Version + ' — оптимизация ' + (Get-Date -Format 'dd.MM.yyyy HH:mm'), '')
   foreach ($it in $plan) { $lines += ('{0,3} [{1}] {2} | {3} | {4}' -f $it.Id, $(if ($it.Checked) { 'x' } else { ' ' }), $it.Title, $script:LevelNames[$it.Level], $it.Result) }
   if ($script:JournalPath) { $lines += ''; $lines += ('Журнал отката: ' + $script:JournalPath); Copy-Item -LiteralPath $script:JournalPath -Destination (Join-Path $dir 'journal.json') -ErrorAction SilentlyContinue }
@@ -2140,12 +2777,17 @@ function Show-Menu {
     Say '  1) Диагностика (только чтение)'
     Say '  2) Оптимизация (план -> «y» -> точка восстановления и журнал -> изменения)'
     Say '  3) Откат по журналу'
+    Say '  4) Проверка после перезагрузки (после обслуживания)'
+    Say '  5) Обновить набор (если в master.txt указан update_url)'
     Say '  0) Выход'
+    if (Test-PostCheckDue) { Say '  ! Было обслуживание и перезагрузка — сделайте пункт 4.' 'Yellow' }
     $a = Ask 'Выбор'
     switch ($a) {
       '1' { Run-Diag }
       '2' { Run-Optimize }
       '3' { Run-Rollback }
+      '4' { Run-PostCheck }
+      '5' { Run-Update }
       '0' { return }
       'q' { return }
       default { }
@@ -2153,6 +2795,232 @@ function Show-Menu {
   }
 }
 
+
+# ================================================================ ПЛАН 0.5: безопасность, ярлык мастера, наборы галочек, «только посмотреть», проверка после перезагрузки
+
+$script:SectionOrder = @('restore', 'security', 'master', 'startup', 'task', 'service', 'tweak', 'appx', 'power', 'uninstall', 'trim', 'clean', 'scan')
+$script:SectionTitles['master'] = 'Ярлык «Помощь мастера» (обратимо)'
+$script:ExtraKinds = @('browserpol', 'hosts', 'firewall', 'helplink')
+
+function Add-ExtraPlanItems($p) {
+  $x = $script:SecX
+  if ($x) {
+    $bp = @($x.BrowserPolicies)
+    foreach ($br in @($bp | ForEach-Object { $_.Browser } | Select-Object -Unique)) {
+      $vals = @($bp | Where-Object { $_.Browser -eq $br })
+      $det = (@($vals | Select-Object -First 4 | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join '; ')
+      [void]$p.Add((New-PlanItem 'security' 'browserpol' ('Убрать принудительные политики браузера {0} ({1} шт.)' -f $br, $vals.Count) ('поиск/стартовая/расширения заданы политикой: ' + $det) 'ask' ([pscustomobject]@{ Browser = $br; Values = $vals }) $null))
+    }
+    $hj = @($x.HostsHijack)
+    if ($hj.Count) {
+      [void]$p.Add((New-PlanItem 'security' 'hosts' ('Убрать перенаправления сайтов из hosts ({0} шт.)' -f $hj.Count) ('строки будут закомментированы, копия файла — в журнале: ' + ((@($hj | Select-Object -First 4 | ForEach-Object { $_.Host }) -join ', '))) 'ask' ([pscustomobject]@{ Lines = $hj }) $null))
+    }
+    $off = @($x.Firewall | Where-Object { -not $_.Enabled } | ForEach-Object { $_.Name })
+    if ($off.Count -and -not @($x.OtherFirewall).Count) {
+      [void]$p.Add((New-PlanItem 'security' 'firewall' ('Включить брандмауэр Windows: ' + ($off -join ', ')) 'другого брандмауэра (антивируса) не найдено' 'base' ([pscustomobject]@{ Profiles = $off }) $null))
+    }
+  }
+  if (Test-MasterSet) {
+    $desk = Get-UserDesktop
+    $lnk = Join-Path $desk ((T 'Помощь мастера') + '.url')
+    if (-not (Test-Path -LiteralPath $lnk)) {
+      [void]$p.Add((New-PlanItem 'master' 'helplink' 'Ярлык «Помощь мастера» на рабочем столе клиента' ('контакты мастера и как дать доступ AnyDesk; ' + $lnk) 'base' ([pscustomobject]@{ Link = $lnk }) $null))
+    }
+  }
+}
+
+function New-HelpHtml {
+  $m = $script:Master
+  $E = { param($x) Get-HtmlEnc $x }
+  $rows = ((Get-MasterContacts) | ForEach-Object { '<div class="r"><span>' + (& $E $_.K) + '</span><b>' + (& $E $_.V) + '</b></div>' }) -join ''
+  $steps = @((T 'Откройте AnyDesk (значок на рабочем столе или в меню Пуск).'), (T 'Назовите мастеру номер «Это рабочее место» (9–10 цифр).'), (T 'Когда появится запрос — нажмите «Принять». Никому другому доступ не давайте.'))
+  $st = ($steps | ForEach-Object { '<li>' + (& $E $_) + '</li>' }) -join ''
+  return ('<!doctype html><html lang="' + $script:Lang + '"><head><meta charset="utf-8"><title>' + (& $E (T 'Помощь мастера')) + '</title><style>body{font:16px/1.5 "Segoe UI",Arial;background:#F5F7FA;color:#16202E;margin:0}.w{max-width:620px;margin:40px auto;background:#fff;border:1px solid #E3E7EE;border-radius:18px;padding:26px 30px}h1{font-size:24px;margin:0 0 6px}.r{display:flex;justify-content:space-between;border-bottom:1px solid #E3E7EE;padding:8px 0}.m{color:#5C6778}</style></head><body><div class="w"><h1>' + (& $E (T 'Помощь мастера')) + '</h1><div class="m">' + (& $E $m.name) + '</div>' + $rows + '<h2 style="font-size:17px;margin:22px 0 6px">' + (& $E (T 'Как дать мастеру доступ')) + '</h2><ol>' + $st + '</ol></div></body></html>')
+}
+
+function Invoke-ExtraPlanItem($it, [string]$batch) {
+  $d = $it.Data
+  switch ($it.Kind) {
+    'browserpol' { foreach ($v in @($d.Values)) { Remove-RegJournaled $v.Path $v.Name $batch ('Политика браузера ' + $d.Browser + ': ' + $v.Name) } }
+    'hosts' {
+      $hp = "$env:windir\System32\drivers\etc\hosts"
+      New-Item -ItemType Directory -Force -Path $script:BackupDir | Out-Null
+      $bk = Join-Path $script:BackupDir ('hosts_' + (Get-Date -Format 'yyyy-MM-dd_HH-mm-ss') + '.bak')
+      Copy-Item -LiteralPath $hp -Destination $bk -Force -ErrorAction Stop
+      Add-JournalEntry ([ordered]@{ type = 'file'; path = $hp; backup = $bk; batch = $batch; label = 'Файл hosts (перенаправления закомментированы)'; time = (Get-Date).ToString('s') })
+      $bad = @{}; foreach ($l in @($d.Lines)) { $bad[[string]$l.Line] = 1 }
+      $out = foreach ($l in @(Get-Content -LiteralPath $hp -Encoding Default)) { if ($bad.ContainsKey([string]$l)) { '# win-kit: ' + $l } else { $l } }
+      [IO.File]::WriteAllLines($hp, [string[]]@($out), [Text.Encoding]::ASCII)
+      try { & ipconfig.exe /flushdns | Out-Null } catch {}
+    }
+    'firewall' {
+      Add-JournalEntry ([ordered]@{ type = 'firewall'; profiles = @($d.Profiles); batch = $batch; label = ('Брандмауэр Windows: ' + (@($d.Profiles) -join ', ')); time = (Get-Date).ToString('s') })
+      Set-NetFirewallProfile -Profile @($d.Profiles) -Enabled True -ErrorAction Stop
+    }
+    'helplink' {
+      New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+      $hf = Join-Path $script:StateDir 'help.html'
+      [IO.File]::WriteAllText($hf, (New-HelpHtml), (New-Object System.Text.UTF8Encoding $false))
+      Add-JournalEntry ([ordered]@{ type = 'created'; path = $d.Link; batch = $batch; label = 'Ярлык «Помощь мастера»'; time = (Get-Date).ToString('s') })
+      [IO.File]::WriteAllText($d.Link, ("[InternetShortcut]`r`nURL=file:///" + ($hf -replace '\\', '/') + "`r`nIconFile=$env:windir\System32\shell32.dll`r`nIconIndex=23`r`n"), [Text.Encoding]::ASCII)
+    }
+    default { throw ('неизвестный вид: ' + $it.Kind) }
+  }
+}
+
+function Undo-ExtraEntry($e) {
+  switch ($e.type) {
+    'file' {
+      if ($e.path -ne "$env:windir\System32\drivers\etc\hosts") { throw 'файл вне списка' }
+      if (-not (Test-Path -LiteralPath $e.backup)) { throw 'нет копии файла' }
+      Copy-Item -LiteralPath $e.backup -Destination $e.path -Force -ErrorAction Stop
+    }
+    'firewall' { Set-NetFirewallProfile -Profile @($e.profiles) -Enabled False -ErrorAction Stop }
+    'created' {
+      # удаляем только свой ярлык .url, созданный набором
+      if ([string]$e.path -notmatch '\.url$') { throw 'не ярлык набора' }
+      if (Test-Path -LiteralPath $e.path) { $c = [IO.File]::ReadAllText($e.path); if ($c -notmatch 'CleanMyPC') { throw 'ярлык изменён — не трогаю' }; Remove-Item -LiteralPath $e.path -Force -ErrorAction Stop }
+    }
+    default { throw ('неизвестная запись: ' + $e.type) }
+  }
+}
+
+# ---------------------------------------------------------------- «только посмотреть»: что именно сделает каждый пункт
+
+function Get-PlanItemPreview($it) {
+  $d = $it.Data
+  switch ($it.Kind) {
+    'startup' { return ('выключить автозапуск (как в Диспетчере задач): ' + $d.ApprovedName) }
+    'uwp' { return 'выключить автозапуск приложения Магазина' }
+    'task' { return ('отключить задачу ' + $d.Path + $d.Name) }
+    'service' { return ('тип запуска службы {0}: «Автоматически» → «Вручную»' -f $d.Name) }
+    'tweak' { return ((@($d.Keys | Where-Object { -not $_.Done } | ForEach-Object { if ($_.Type -eq 'delete') { 'удалить ' + $_.Name } else { '{0} = {1}' -f $_.Name, $_.Value } }) -join '; ')) }
+    'appx' { return ('удалить для пользователя: ' + (@($d.Apps | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ')) }
+    'uninstall' { $u = $d.Quiet; if (-not $u) { $u = $d.Uninstall }; return ('запустить удаление: ' + $u) }
+    'hibernate' { return 'powercfg /hibernate off' }
+    'power' { return ('powercfg /setactive ' + $d.New) }
+    'clean' { return ('удалить мусор: ' + (@($d.Paths) -join '; ')) }
+    'browserpol' { return ('удалить значения политик: ' + (@($d.Values | ForEach-Object { $_.Name }) -join ', ')) }
+    'hosts' { return ('закомментировать строки: ' + (@($d.Lines | ForEach-Object { $_.Line }) -join ' | ')) }
+    'firewall' { return ('включить профили: ' + (@($d.Profiles) -join ', ')) }
+    'helplink' { return ('создать ярлык ' + $d.Link) }
+    'restore' { return 'Checkpoint-Computer' }
+    'trim' { return 'Optimize-Volume -ReTrim' }
+    'scan' { return 'Start-MpScan -ScanType QuickScan' }
+  }
+  return ''
+}
+
+function Invoke-DryRun($plan) {
+  Say '  Режим «только посмотреть»: ничего не меняется.' 'Cyan'
+  foreach ($it in @($plan | Where-Object { $_.Checked })) {
+    $it.Result = 'проверено'
+    Say ('  [проверка] {0}' -f $it.Title) 'White'
+    $pv = Get-PlanItemPreview $it; if ($pv) { Say ('      ' + $pv) 'DarkGray' }
+  }
+}
+
+# ---------------------------------------------------------------- наборы галочек
+
+$script:Presets = [ordered]@{ recommended = 'Как рекомендовано'; weak = 'Слабый ПК'; office = 'Офис'; gaming = 'Игровой'; elderly = 'Для пожилых' }
+function Set-PlanPreset($plan, [string]$name) {
+  $office = '(?i)teams|zoom|slack|outlook|webex|skype for business'
+  $games = '(?i)steam|epic|discord|battle\.net|ea ?desktop|origin|ubisoft|gog|nvidia|geforce|razer|logitech|corsair|steelseries|armoury|msi'
+  $quiet = @('widgets', 'news_w10', 'copilot', 'search_highlights')
+  foreach ($it in @($plan)) {
+    $c = [bool]$it.Default
+    if ($name -ne 'recommended' -and $it.Level -eq 'base') { $c = $true }
+    if (($name -eq 'weak' -or $name -eq 'elderly') -and $it.Kind -eq 'tweak' -and $quiet -contains [string]$it.Data.Id) { $c = $true }
+    if ($name -eq 'office' -and @('startup', 'uwp', 'task', 'service') -contains $it.Kind -and $it.Title -match $office) { $c = $false }
+    if ($name -eq 'gaming' -and @('startup', 'uwp', 'task', 'service') -contains $it.Kind -and $it.Title -match $games) { $c = $false }
+    if ($name -eq 'gaming' -and $it.Kind -eq 'tweak' -and [string]$it.Data.Id -eq 'gamedvr') { $c = $false }
+    if ($it.Kind -eq 'uninstall') { $c = $false }   # удаление — только вручную
+    $it.Checked = $c
+  }
+}
+
+# ---------------------------------------------------------------- проверка после перезагрузки (запускается вручную: кнопкой в окне или пунктом меню)
+
+$script:PostCheckPath = Join-Path $script:StateDir 'postcheck.json'
+function Get-HealthEx {
+  $h = Get-Health
+  $h | Add-Member -NotePropertyName 'Печать (диспетчер очереди)' -NotePropertyValue ((Get-Service Spooler -ErrorAction SilentlyContinue).Status -eq 'Running') -Force
+  return $h
+}
+function Save-PostCheckState($baseHealth, $before, $reportData) {
+  try {
+    New-Item -ItemType Directory -Force -Path $script:StateDir | Out-Null
+    $st = [ordered]@{ created = (Get-Date).ToString('s'); boot = $(if ($script:Sys.LastBoot) { $script:Sys.LastBoot.ToString('s') } else { '' }); journal = $script:JournalPath
+                      health = $baseHealth; before = $before; report = $reportData; done = $false }
+    [IO.File]::WriteAllText($script:PostCheckPath, (ConvertTo-Json -InputObject $st -Depth 8), $script:Utf8Bom)
+  } catch { Note-Error 'postcheck save' $_.Exception.Message }
+}
+function Get-PostCheckState {
+  try { if (Test-Path -LiteralPath $script:PostCheckPath) { return ((Get-Content -LiteralPath $script:PostCheckPath -Raw -Encoding UTF8) | ConvertFrom-Json) } } catch {}
+  return $null
+}
+function Test-PostCheckDue {
+  $st = Get-PostCheckState
+  if (-not $st -or $st.done) { return $false }
+  try { $lb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime; return ($lb -gt ([datetime]$st.created)) } catch { return $false }
+}
+
+function Invoke-PostCheck {
+  $st = Get-PostCheckState
+  if (-not $st) { Say 'Обслуживания ещё не было — проверять нечего.' 'Yellow'; return $null }
+  Head 'Проверка после перезагрузки'
+  $now = Get-HealthEx
+  $bad = @()
+  foreach ($p in $st.health.PSObject.Properties) { if ($p.Value -and -not $now.($p.Name)) { $bad += $p.Name } }
+  foreach ($p in $now.PSObject.Properties) { Say ('  {0}: {1}' -f $p.Name, $(if ($p.Value) { 'работает' } else { 'НЕ работает' })) $(if ($p.Value) { 'Green' } elseif ($bad -contains $p.Name) { 'Red' } else { 'DarkGray' }) }
+  # замеры «после»
+  $script:Sys = Get-SysInfo; $script:Vols = Get-Volumes; $script:Boot = Get-BootInfo
+  $script:Startup = Get-StartupItems
+  $c = @($script:Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1
+  $bootMs = $null; if ($script:Boot.LastBootTime -and $script:Sys.LastBoot -and $script:Boot.LastBootTime -gt $script:Sys.LastBoot) { $bootMs = $script:Boot.LastBootMs }
+  $after = [ordered]@{ FreeGB = $(if ($c) { [math]::Round($c.Free / 1GB, 1) }); StartupEnabled = @($script:Startup | Where-Object { $_.Enabled }).Count; BootMs = $bootMs; RamIdlePct = $script:Sys.RamUsedPct }
+  $mm = [ordered]@{ Time = (Get-Date).ToString('s'); Label = 'after-reboot' }; foreach ($k in $after.Keys) { $mm[$k] = $after[$k] }; Save-Metrics ([pscustomobject]$mm)
+  if ($bad.Count) { Say ('  После обслуживания перестало работать: ' + ($bad -join ', ')) 'Red' } else { Say '  Всё работает.' 'Green' }
+  # отчёт клиенту — с замерами после перезагрузки
+  $rep = $null
+  if ($st.report) {
+    $d = @{}; foreach ($p in $st.report.PSObject.Properties) { $d[$p.Name] = $p.Value }
+    $d.after = $after; $d.stage = $(if ($bad.Count) { 'problem' } else { 'after-reboot' }); $d.created = (Get-Date).ToString('s')
+    $rep = Save-ClientReport $d $null
+  }
+  Add-HistoryVisit 'postcheck' @{ ok = (-not $bad.Count); bad = ($bad -join ', ') }
+  $st.done = $true
+  try { [IO.File]::WriteAllText($script:PostCheckPath, (ConvertTo-Json -InputObject $st -Depth 8), $script:Utf8Bom) } catch {}
+  return [pscustomobject]@{ Bad = $bad; Journal = [string]$st.journal; Report = $rep; After = $after; Before = $st.before }
+}
+
+function Run-PostCheck {
+  $r = Invoke-PostCheck
+  if (-not $r) { return }
+  if ($r.Report) { Say ('  Отчёт клиенту: ' + $r.Report) 'Green' }
+  if ($r.Bad.Count -and $r.Journal -and (Test-Path -LiteralPath $r.Journal) -and $script:Interactive) {
+    $a = Ask '  Вернуть всё как было (откат последнего обслуживания)? (y/n)'
+    if (Is-Yes $a) { $null = Undo-Journal $r.Journal $null }
+  }
+}
+
+# ---------------------------------------------------------------- после выполнения плана: отчёт клиенту, история, данные для проверки после перезагрузки
+
+function Complete-Optimize($plan, $before, [string]$dir) {
+  if ($script:DryRun) { return }
+  $okItems = @($plan | Where-Object { $_.Checked -and [string]$_.Result -match '^(ok|удалено|чисто)' })
+  try {
+    $vols = Get-Volumes; $c = @($vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1
+    $offStart = @($okItems | Where-Object { $_.Kind -eq 'startup' -or $_.Kind -eq 'uwp' }).Count
+    $after = [ordered]@{ FreeGB = $(if ($c) { [math]::Round($c.Free / 1GB, 1) }); StartupEnabled = $(if ($null -ne $before.StartupEnabled) { [math]::Max(0, [int]$before.StartupEnabled - $offStart) }); BootMs = $null; RamIdlePct = $null }
+    $bf = [ordered]@{ FreeGB = $before.FreeGB; StartupEnabled = $before.StartupEnabled; BootMs = $before.BootMs; RamUsedPct = $before.RamUsedPct }
+    $data = Get-ClientReportData $plan $bf $after 'done'
+    $rep = Save-ClientReport $data $dir
+    if ($rep) { Say ('  Отчёт клиенту: ' + $rep) 'Green' }
+    if ($okItems.Count) { Save-PostCheckState $script:HealthBase $bf $data }
+    Add-HistoryVisit 'optimize' @{ done = $okItems.Count; freed = [long]$script:FreedTotal }
+  } catch { Note-Error 'complete' $_.Exception.Message }
+}
 
 # ================================================================ ОКНО (WPF) — оболочка набора
 # Движок (диагностика/план/выполнение/откат) работает в фоновом потоке (runspace) с тем же кодом,
@@ -2188,7 +3056,7 @@ function Gui-Diag {
     Sys = $script:Sys; Activation = $script:Activation; Disks = $script:Disks; Vols = $script:Vols; Battery = $script:Battery
     Boot = $script:Boot; Procs = $script:Procs; Sec = $script:Sec; Findings = $script:Findings; Space = $script:Space
     Win11 = $script:Win11; Plan = $plan; Managed = $managed; ReportZip = "$dir.zip"; Compare = $compare; Errors = $script:Errors.Count
-    User = $script:User
+    User = $script:User; History = (Get-History); PostCheck = (Get-PostCheckState)
   }
 }
 
@@ -2197,14 +3065,15 @@ function Gui-Execute($plan) {
   $script:Journal = $null; $script:JournalPath = $null
   $dir = New-SessionDir 'optimize'
   Head 'Выполняю'
-  if ($script:GuiBefore) { Save-Metrics $script:GuiBefore }
+  if ($script:GuiBefore -and -not $script:DryRun) { Save-Metrics $script:GuiBefore }
   Invoke-Plan $plan
+  Complete-Optimize $plan $script:GuiBefore $dir
   $lines = @('win-kit ' + $script:Version + ' — оптимизация (окно) ' + (Get-Date -Format 'dd.MM.yyyy HH:mm'), '')
   foreach ($it in $plan) { $lines += ('{0,3} [{1}] {2} | {3} | {4}' -f $it.Id, $(if ($it.Checked) { 'x' } else { ' ' }), $it.Title, $script:LevelNames[$it.Level], $it.Result) }
   if ($script:JournalPath) { $lines += ''; $lines += ('Журнал отката: ' + $script:JournalPath); Copy-Item -LiteralPath $script:JournalPath -Destination (Join-Path $dir 'journal.json') -ErrorAction SilentlyContinue }
   Write-TextFile (Join-Path $dir 'optimize.txt') ($lines -join "`r`n")
   Close-Session $dir
-  $sync.Result = [pscustomobject]@{ ReportZip = "$dir.zip"; Journal = $script:JournalPath; Errors = $script:Errors.Count; ExitCode = $script:ExitCode }
+  $sync.Result = [pscustomobject]@{ ReportZip = "$dir.zip"; Journal = $script:JournalPath; Errors = $script:Errors.Count; ExitCode = $script:ExitCode; ClientReport = $script:ClientReport; DryRun = $script:DryRun }
 }
 
 function Gui-Journals {
@@ -2231,6 +3100,11 @@ function Gui-Rollback([string]$path, $pick) {
   Close-Session $dir
   $sync.Result = [pscustomobject]@{ ReportZip = "$dir.zip"; Ok = $r.Ok; Fail = $r.Fail }
 }
+
+function Gui-PostCheck { $sync.Result = Invoke-PostCheck }
+function Gui-UpdateCheck { $sync.Result = Get-KitUpdate }
+function Gui-InstallUpdate($upd) { $sync.Result = Install-KitUpdate $upd }
+function Gui-Collect { $sync.Result = Run-Collect }
 
 # ---------------------------------------------------------------- разметка окна
 
@@ -2370,6 +3244,49 @@ $script:GuiXaml = @'
         </Setter.Value>
       </Setter>
     </Style>
+    <Style TargetType="ComboBox">
+      <Setter Property="Foreground" Value="#E6E9EF"/>
+      <Setter Property="MinHeight" Value="32"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton Focusable="False" ClickMode="Press" Cursor="Hand" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border Background="#1B212D" BorderBrush="#2C3446" BorderThickness="1" CornerRadius="9">
+                      <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="10" Foreground="#8C96A8" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    </Border>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+              <ContentPresenter IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" Margin="12,6,28,6" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+              <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                <Border Background="#181D27" BorderBrush="#2C3446" BorderThickness="1" CornerRadius="9" MinWidth="{TemplateBinding ActualWidth}" Padding="4" Margin="0,4,0,0">
+                  <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto"><ItemsPresenter/></ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="ComboBoxItem">
+      <Setter Property="Foreground" Value="#E6E9EF"/>
+      <Setter Property="Padding" Value="10,6"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="b" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="b" Property="Background" Value="#22304D"/></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="#9DB9FF"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Grid.Resources>
   <Grid.ColumnDefinitions><ColumnDefinition Width="236"/><ColumnDefinition/></Grid.ColumnDefinitions>
 
@@ -2389,6 +3306,7 @@ $script:GuiXaml = @'
             <TextBlock x:Name="txtVer" Foreground="{StaticResource Muted}" FontSize="11"/>
           </StackPanel>
         </StackPanel>
+        <TextBlock x:Name="txtMaster" Margin="0,14,0,0" Foreground="#9DB9FF" FontSize="12" TextWrapping="Wrap" Visibility="Collapsed"/>
         <Border Margin="0,20,0,0" Background="{StaticResource Card}" CornerRadius="12" Padding="13,11">
           <StackPanel>
             <TextBlock x:Name="txtPc" Text="Компьютер" FontWeight="SemiBold" TextWrapping="Wrap"/>
@@ -2409,6 +3327,12 @@ $script:GuiXaml = @'
         </Border>
         <TextBlock Text="Без кнопки «Выполнить» ничего не меняется. Всё обратимое пишется в журнал отката."
                    Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,12,0,0"/>
+        <DockPanel Margin="0,12,0,0">
+          <TextBlock Text="Язык" Foreground="{StaticResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <ComboBox x:Name="cbLang" FontSize="12">
+            <ComboBoxItem Tag="ru" Content="Русский"/><ComboBoxItem Tag="uk" Content="Українська"/><ComboBoxItem Tag="en" Content="English"/><ComboBoxItem Tag="pt" Content="Português"/>
+          </ComboBox>
+        </DockPanel>
       </StackPanel>
     </DockPanel>
   </Border>
@@ -2419,6 +3343,12 @@ $script:GuiXaml = @'
     <Border x:Name="banner" Visibility="Collapsed" CornerRadius="12" Padding="14,11" Margin="0,0,0,16" Background="#33260F">
       <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" Foreground="#FBBF24" Margin="0,2,10,0"/><TextBlock x:Name="txtBanner" TextWrapping="Wrap" Foreground="#FBD27A"/></StackPanel>
     </Border>
+    <Border x:Name="pnlUpdate" Visibility="Collapsed" CornerRadius="12" Padding="14,9" Margin="0,0,0,16" Background="#162442" VerticalAlignment="Top">
+      <DockPanel>
+        <Button x:Name="btnUpdate" DockPanel.Dock="Right" Style="{StaticResource Btn}" Content="Обновить" Padding="14,6"/>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" Foreground="#8FB0FF" Margin="0,2,10,0"/><TextBlock x:Name="txtUpdate" TextWrapping="Wrap" Foreground="#C9D8FF"/></StackPanel>
+      </DockPanel>
+    </Border>
     <Grid Grid.Row="1">
 
       <!-- ===== ОБЗОР -->
@@ -2427,6 +3357,9 @@ $script:GuiXaml = @'
         <DockPanel>
           <Button x:Name="btnDiag" DockPanel.Dock="Right" Style="{StaticResource Btn}" VerticalAlignment="Center">
             <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" Margin="0,2,9,0"/><TextBlock x:Name="txtDiagBtn" Text="Запустить диагностику"/></StackPanel>
+          </Button>
+          <Button x:Name="btnPostCheck" DockPanel.Dock="Right" Style="{StaticResource Ghost}" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE9D5;" FontFamily="Segoe MDL2 Assets" Margin="0,2,8,0"/><TextBlock Text="Проверка после перезагрузки"/></StackPanel>
           </Button>
           <StackPanel>
             <TextBlock Text="Обзор компьютера" FontSize="28" FontWeight="Bold"/>
@@ -2471,6 +3404,9 @@ $script:GuiXaml = @'
           <Button x:Name="btnRun" DockPanel.Dock="Right" Style="{StaticResource Btn}" Background="#22B565" VerticalAlignment="Center" IsEnabled="False">
             <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" Margin="0,2,9,0"/><TextBlock Text="Выполнить"/></StackPanel>
           </Button>
+          <Button x:Name="btnDry" DockPanel.Dock="Right" Style="{StaticResource Ghost}" VerticalAlignment="Center" Margin="0,0,10,0" IsEnabled="False">
+            <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7B3;" FontFamily="Segoe MDL2 Assets" Margin="0,2,8,0"/><TextBlock Text="Только посмотреть"/></StackPanel>
+          </Button>
           <StackPanel>
             <TextBlock Text="План оптимизации" FontSize="28" FontWeight="Bold"/>
             <TextBlock x:Name="txtPlanSummary" Text="Сначала запустите диагностику на странице «Обзор»." Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
@@ -2479,6 +3415,7 @@ $script:GuiXaml = @'
         <DockPanel Grid.Row="1" Margin="0,18,0,12">
           <Grid DockPanel.Dock="Right" Width="240"><TextBox x:Name="txtFilter"/><StackPanel x:Name="txtFilterHint" Orientation="Horizontal" IsHitTestVisible="False" VerticalAlignment="Center" Margin="12,0,0,0"><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,1,8,0"/><TextBlock Text="Поиск по плану…" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></StackPanel></Grid>
           <WrapPanel VerticalAlignment="Center">
+            <ComboBox x:Name="cbPreset" Width="170" Margin="0,0,8,0" VerticalAlignment="Center" FontSize="13"/>
             <Button x:Name="btnSelAuto" Style="{StaticResource Ghost}" Content="Как рекомендовано" Margin="0,0,8,0"/>
             <Button x:Name="btnSelBase" Style="{StaticResource Ghost}" Content="+ всё «можно»" Margin="0,0,8,0"/>
             <Button x:Name="btnSelNone" Style="{StaticResource Ghost}" Content="Снять всё" Margin="0,0,18,0"/>
@@ -2514,6 +3451,8 @@ $script:GuiXaml = @'
         <Border x:Name="pnlDone" Grid.Row="3" Visibility="Collapsed" Background="{StaticResource Card}" CornerRadius="16" Padding="20,15" Margin="0,14,0,0">
           <DockPanel>
             <WrapPanel DockPanel.Dock="Right" VerticalAlignment="Center">
+              <Button x:Name="btnClientReport" Style="{StaticResource Ghost}" Content="Отчёт клиенту" Margin="0,0,8,0"/>
+              <Button x:Name="btnReportDesk" Style="{StaticResource Ghost}" Content="На рабочий стол" Margin="0,0,8,0" ToolTip="Положить отчёт клиенту на его рабочий стол"/>
               <Button x:Name="btnOpenReport" Style="{StaticResource Ghost}" Content="Показать отчёт" Margin="0,0,8,0"/>
               <Button x:Name="btnRestartExplorer" Style="{StaticResource Ghost}" Content="Перезапустить Проводник" Margin="0,0,8,0"/>
               <Button x:Name="btnReboot" Style="{StaticResource Btn}" Content="Перезагрузить ПК"/>
@@ -2565,6 +3504,8 @@ $script:GuiXaml = @'
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
         <DockPanel>
           <Button x:Name="btnOpenReports" DockPanel.Dock="Right" Style="{StaticResource Ghost}" Content="Открыть папку" VerticalAlignment="Center"/>
+          <Button x:Name="btnCollect" DockPanel.Dock="Right" Style="{StaticResource Ghost}" Content="Неизвестные программы" VerticalAlignment="Center" Margin="0,0,8,0" ToolTip="Собрать неизвестную автозагрузку из всех отчётов — для пополнения списков"/>
+          <Button x:Name="btnLastClient" DockPanel.Dock="Right" Style="{StaticResource Ghost}" Content="Отчёт клиенту" VerticalAlignment="Center" Margin="0,0,8,0"/>
           <StackPanel>
             <TextBlock Text="Отчёты" FontSize="28" FontWeight="Bold"/>
             <TextBlock Text="Архивы для Claude — заберите их к себе через AnyDesk (C:\cleanmytv\reports)." Foreground="{StaticResource Muted}" Margin="0,4,0,0"/>
@@ -2701,34 +3642,36 @@ function Render-Overview($r) {
   $s = $r.Sys
   $u.txtPc.Text = (('{0} {1}' -f $s.Manufacturer, $s.Model) -replace '\s+', ' ').Trim()
   $u.txtOs.Text = ('{0} {1} · сборка {2}' -f $s.Caption, $s.DisplayVersion, $s.Build)
-  $u.txtOverviewSub.Text = ('Диагностика {0:dd.MM HH:mm} · пользователь {1}' -f (Get-Date), $r.User.ShortName)
+  $u.txtOverviewSub.Text = ((T 'Диагностика {0:dd.MM HH:mm} · пользователь {1}') -f (Get-Date), $r.User.ShortName)
   # карточки
   $winState = 'ok'; if (-not $s.IsWin11) { $winState = 'bad' } elseif ($r.Activation -ne 'активирована') { $winState = 'warn' }
-  Add-Card 'E7F8' 'Windows' (($s.Caption -replace '^Windows ', 'Windows ') + ' ' + $s.DisplayVersion) ($r.Activation + $(if (-not $s.IsWin11) { ' · без обновлений безопасности' } else { '' })) $winState
+  Add-Card 'E7F8' 'Windows' (($s.Caption -replace '^Windows ', 'Windows ') + ' ' + $s.DisplayVersion) ((T $r.Activation) + $(if (-not $s.IsWin11) { ' · ' + (T 'без обновлений безопасности') } else { '' })) $winState
   $cpu = ($s.Cpu -replace '\(R\)|\(TM\)|CPU|Processor|with Radeon.*|@.*', '' -replace '\s+', ' ').Trim()
   $ramState = 'ok'; if ($s.RamUsedPct -ge 85) { $ramState = 'warn' }
-  Add-Card 'E950' 'Процессор и память' $cpu ('{0} ГБ ОЗУ · занято {1}%' -f $s.RamGB, $s.RamUsedPct) $ramState
+  Add-Card 'E950' (T 'Процессор и память') $cpu ((T '{0} ГБ ОЗУ · занято {1}%') -f $s.RamGB, $s.RamUsedPct) $ramState
   $c = @($r.Vols | Where-Object { $_.Drive -eq $env:SystemDrive }) | Select-Object -First 1
   if ($c) {
     $dState = 'ok'; if ($c.FreePct -lt 8 -or $c.Free -lt 10GB) { $dState = 'bad' } elseif ($c.FreePct -lt 15 -or $c.Free -lt 25GB) { $dState = 'warn' }
     $d = @($r.Disks | Where-Object { $_.System }) | Select-Object -First 1
-    $dsub = ('из {0}' -f (Fmt-GB $c.Size)); if ($d) { $dsub += (' · {0}' -f $d.Type); if ($null -ne $d.Wear) { $dsub += (', износ {0}%' -f $d.Wear) } }
-    Add-Card 'EDA2' ('Диск ' + $c.Drive) ((Fmt-GB $c.Free) + ' свободно') $dsub $dState
+    $dsub = ((T 'из {0}') -f (Fmt-GB $c.Size)); if ($d) { $dsub += (' · {0}' -f $d.Type); if ($null -ne $d.Wear) { $dsub += (', ' + (T 'износ') + (' {0}%' -f $d.Wear)) } }
+    Add-Card 'EDA2' ((T 'Диск') + ' ' + $c.Drive) ((Fmt-GB $c.Free) + ' ' + (T 'свободно')) $dsub $dState
   }
   if ($r.Boot -and $r.Boot.LastBootMs) {
     $bs = 'ok'; if ($r.Boot.LastBootMs -gt 120000) { $bs = 'bad' } elseif ($r.Boot.LastBootMs -gt 60000) { $bs = 'warn' }
-    Add-Card 'E916' 'Загрузка Windows' ('{0:N0} с' -f ($r.Boot.LastBootMs / 1000)) 'по журналу последней загрузки' $bs
+    Add-Card 'E916' (T 'Загрузка Windows') (('{0:N0} ' -f ($r.Boot.LastBootMs / 1000)) + (T 'с')) (T 'по журналу последней загрузки') $bs
   }
   $av = 'нет защиты'; $avState = 'bad'
   $other = @($r.Sec.AvProducts | Where-Object { $_.Enabled -and $_.Name -notmatch 'Windows Defender|Защитник|Microsoft Defender' }) | Select-Object -First 1
   if ($r.Sec.Defender -and $r.Sec.Defender.RealTime) { $av = 'Защитник Windows'; $avState = 'ok' } elseif ($other) { $av = $other.Name; $avState = 'ok' }
-  Add-Card 'EA18' 'Антивирус' $av $(if ($avState -eq 'ok') { 'защита в реальном времени' } else { 'включить Защитник!' }) $avState
-  foreach ($b in @($r.Battery)) { if ($b) { $bst = 'ok'; if ($b.WearPct -ge 40) { $bst = 'warn' }; Add-Card 'E83F' 'Батарея' ('износ {0}%' -f $b.WearPct) ('ёмкость {0:N0} из {1:N0} мВт·ч' -f $b.FullmWh, $b.DesignmWh) $bst; break } }
+  Add-Card 'EA18' (T 'Антивирус') (T $av) $(if ($avState -eq 'ok') { T 'защита в реальном времени' } else { T 'включить Защитник!' }) $avState
+  foreach ($b in @($r.Battery)) { if ($b) { $bst = 'ok'; if ($b.WearPct -ge 40) { $bst = 'warn' }; Add-Card 'E83F' (T 'Батарея') ((T 'износ') + (' {0}%' -f $b.WearPct)) ((T 'ёмкость {0:N0} из {1:N0} мВт·ч') -f $b.FullmWh, $b.DesignmWh) $bst; break } }
   if ($r.Compare) {
     $bf = $r.Compare.Before; $nw = $r.Compare.Now
-    $txt = ('загрузка {0} → {1} с' -f $(if ($bf.BootMs) { '{0:N0}' -f ($bf.BootMs / 1000) } else { '?' }), $(if ($nw.BootMs) { '{0:N0}' -f ($nw.BootMs / 1000) } else { '?' }))
-    Add-Card 'E9D2' 'Было → стало' ('{0} → {1} ГБ' -f $bf.FreeGB, $nw.FreeGB) ($txt + (' · автозагрузка {0} → {1}' -f $bf.StartupEnabled, $nw.StartupEnabled)) 'info'
+    $txt = ((T 'загрузка {0} → {1} с') -f $(if ($bf.BootMs) { '{0:N0}' -f ($bf.BootMs / 1000) } else { '?' }), $(if ($nw.BootMs) { '{0:N0}' -f ($nw.BootMs / 1000) } else { '?' }))
+    Add-Card 'E9D2' (T 'Было → стало') (('{0} → {1} ' -f $bf.FreeGB, $nw.FreeGB) + (T 'ГБ')) ($txt + ((' · ' + (T 'автозагрузка') + ' {0} → {1}') -f $bf.StartupEnabled, $nw.StartupEnabled)) 'info'
   }
+  $hv = @($r.History | Where-Object { $_ -and $_.kind -ne 'diag' })
+  if ($hv.Count) { $lt = ''; try { $lt = ([datetime]$hv[-1].time).ToString('dd.MM.yyyy') } catch {}; Add-Card 'E81C' (T 'Визиты мастера') ([string]@($hv | Where-Object { $_.kind -eq 'optimize' }).Count) ((T 'последний') + ' ' + $lt) 'info' }
   # находки
   $order = @{ red = 0; yellow = 1; info = 2 }
   $fs = @($r.Findings | Where-Object { $_ } | Sort-Object { $order[$_.Sev] })
@@ -2736,7 +3679,7 @@ function Render-Overview($r) {
     $n = @($fs | Where-Object { $_.Sev -eq $sev }).Count
     if ($n) { $st = $script:SevStyle[$sev]; [void]$u.pnlFindCount.Children.Add((New-Badge ([string]$n) $st[1] $st[2])) }
   }
-  if ($fs.Count -eq 0) { [void]$u.findingsPanel.Children.Add((New-Text 'Серьёзных проблем не найдено.' 14 '#34D399')) }
+  if ($fs.Count -eq 0) { [void]$u.findingsPanel.Children.Add((New-Text (T 'Серьёзных проблем не найдено.') 14 '#34D399')) }
   foreach ($x in $fs) {
     $st = $script:SevStyle[$x.Sev]
     $row = New-Object Windows.Controls.Grid; $row.Margin = '0,0,0,12'
@@ -2752,9 +3695,9 @@ function Render-Overview($r) {
   }
   # место
   $items = @()
-  if ($r.Space -and @($r.Space.Top).Count) { $items = @($r.Space.Top | Select-Object -First 9); $u.txtSpaceTitle.Text = ('Что занимает место на ' + $env:SystemDrive) }
+  if ($r.Space -and @($r.Space.Top).Count) { $items = @($r.Space.Top | Select-Object -First 9); $u.txtSpaceTitle.Text = ((T 'Что занимает место на') + ' ' + $env:SystemDrive) }
   else {
-    $u.txtSpaceTitle.Text = 'Диски'
+    $u.txtSpaceTitle.Text = (T 'Диски')
     foreach ($v in @($r.Vols)) { if ($v) { $items += [pscustomobject]@{ Path = ('{0} {1}' -f $v.Drive, $v.Label); Size = ($v.Size - $v.Free); Advice = ('свободно {0} из {1}' -f (Fmt-GB $v.Free), (Fmt-GB $v.Size)); Total = $v.Size } } }
   }
   $max = 1; foreach ($i in $items) { $t = $i.Size; if ($i.PSObject.Properties['Total']) { $t = $i.Total }; if ($t -gt $max) { $max = $t } }
@@ -2790,9 +3733,10 @@ function Update-PlanSummary {
   $sel = @($plan | Where-Object { $_.Checked })
   $free = [long]0; foreach ($i in $sel) { if ($i.Size) { $free += [long]$i.Size } }
   $irr = @($sel | Where-Object { $_.Section -eq 'uninstall' -or $_.Section -eq 'clean' }).Count
-  $u.txtPlanSummary.Text = ('Отмечено {0} из {1}' -f $sel.Count, $plan.Count) + $(if ($free -gt 0) { (' · освободится ≈ ' + (Fmt-Size $free)) } else { '' }) + $(if ($irr) { (' · необратимых: ' + $irr) } else { '' })
+  $u.txtPlanSummary.Text = ((T 'Отмечено {0} из {1}') -f $sel.Count, $plan.Count) + $(if ($free -gt 0) { (' · ' + (T 'освободится ≈') + ' ' + (Fmt-Size $free)) } else { '' }) + $(if ($irr) { (' · ' + (T 'необратимых:') + ' ' + $irr) } else { '' })
   $u.txtBadgePlan.Text = [string]$sel.Count; $u.badgePlan.Visibility = 'Visible'
   $u.btnRun.IsEnabled = ($sel.Count -gt 0 -and $script:G.CanRun -and -not $script:G.Job)
+  $u.btnDry.IsEnabled = ($sel.Count -gt 0 -and -not $script:G.Job)
   foreach ($h in $script:G.SectionHeads) { $n = @($plan | Where-Object { $_.Section -eq $h.Tag -and $_.Checked }).Count; $t = @($plan | Where-Object { $_.Section -eq $h.Tag }).Count; $h.Child.Text = ('{0} / {1}' -f $n, $t) }
 }
 
@@ -2808,7 +3752,7 @@ function Render-Plan($plan) {
   $script:G.SectionHeads = New-Object System.Collections.ArrayList
   $script:G.Plan = $plan
   if (-not $plan -or @($plan).Count -eq 0) {
-    [void]$u.planPanel.Children.Add((New-Text 'Предложить нечего — всё уже в порядке.' 14 '#34D399'))
+    [void]$u.planPanel.Children.Add((New-Text (T 'Предложить нечего — всё уже в порядке.') 14 '#34D399'))
     return
   }
   $cur = ''
@@ -2817,7 +3761,7 @@ function Render-Plan($plan) {
       $cur = $it.Section
       $hd = New-Object Windows.Controls.DockPanel; $hd.Margin = '2,18,0,10'
       $btns = New-Object Windows.Controls.StackPanel; $btns.Orientation = 'Horizontal'; [Windows.Controls.DockPanel]::SetDock($btns, 'Right')
-      foreach ($pair in @(@('все', $true), @('ничего', $false))) {
+      foreach ($pair in @(@((T 'все'), $true), @((T 'ничего'), $false))) {
         $lb = New-Object Windows.Controls.Button; $lb.Style = $script:G.Root.FindResource('Link'); $lb.Content = $pair[0]
         $lb.Tag = @($cur, $pair[1])
         $lb.Add_Click({ param($s2, $e2) foreach ($p in $script:G.Plan) { if ($p.Section -eq $s2.Tag[0]) { $p.Checked = [bool]$s2.Tag[1] } }; Sync-PlanChecks })
@@ -2825,11 +3769,11 @@ function Render-Plan($plan) {
       }
       [void]$hd.Children.Add($btns)
       $tsp = New-Object Windows.Controls.StackPanel; $tsp.Orientation = 'Horizontal'
-      $tt = New-Text ($script:SectionTitles[$cur] -replace '\s*\(.*\)\s*$', '') 15 '#F2F4F8' 'SemiBold' $false
+      $tt = New-Text (T ($script:SectionTitles[$cur] -replace '\s*\(.*\)\s*$', '')) 15 '#F2F4F8' 'SemiBold' $false
       [void]$tsp.Children.Add($tt)
       $cnt = New-Badge '' '#9DB9FF' '#1E2A44'; $cnt.Tag = $cur; [void]$tsp.Children.Add($cnt); [void]$script:G.SectionHeads.Add($cnt)
-      if ($cur -eq 'uninstall' -or $cur -eq 'clean') { [void]$tsp.Children.Add((New-Badge 'необратимо' '#F87171' '#3A1717')) }
-      elseif ($cur -ne 'restore' -and $cur -ne 'trim' -and $cur -ne 'scan') { [void]$tsp.Children.Add((New-Badge 'обратимо' '#34D399' '#10301F')) }
+      if ($cur -eq 'uninstall' -or $cur -eq 'clean') { [void]$tsp.Children.Add((New-Badge (T 'необратимо') '#F87171' '#3A1717')) }
+      elseif ($cur -ne 'restore' -and $cur -ne 'trim' -and $cur -ne 'scan') { [void]$tsp.Children.Add((New-Badge (T 'обратимо') '#34D399' '#10301F')) }
       [void]$hd.Children.Add($tsp)
       [void]$u.planPanel.Children.Add($hd)
     }
@@ -2842,12 +3786,12 @@ function Render-Plan($plan) {
     $cb.Add_Unchecked({ param($s2, $e2) $s2.Tag.Checked = $false; Update-PlanSummary })
     [void]$g.Children.Add($cb)
     $tx = New-Object Windows.Controls.StackPanel; [Windows.Controls.Grid]::SetColumn($tx, 1)
-    [void]$tx.Children.Add((New-Text $it.Title 13 '#E6E9EF' 'SemiBold'))
+    [void]$tx.Children.Add((New-Text (T $it.Title) 13 '#E6E9EF' 'SemiBold'))
     if ($it.Detail) { $dt = New-Text $it.Detail 12 '#8C96A8'; $dt.Margin = '0,3,0,0'; [void]$tx.Children.Add($dt) }
     [void]$g.Children.Add($tx)
     $rt = New-Object Windows.Controls.StackPanel; $rt.Orientation = 'Horizontal'; $rt.VerticalAlignment = 'Top'; [Windows.Controls.Grid]::SetColumn($rt, 2)
     if ($it.Size) { $szt = New-Text (Fmt-Size $it.Size) 12 '#C9D1DE' 'SemiBold' $false; $szt.VerticalAlignment = 'Center'; $szt.Margin = '12,0,0,0'; [void]$rt.Children.Add($szt) }
-    $ls = $script:LevelStyle[$it.Level]; if ($ls) { [void]$rt.Children.Add((New-Badge $ls[0] $ls[1] $ls[2])) }
+    $ls = $script:LevelStyle[$it.Level]; if ($ls) { [void]$rt.Children.Add((New-Badge (T $ls[0]) $ls[1] $ls[2])) }
     [void]$g.Children.Add($rt)
     $row.Child = $g
     $row.Tag = $cb
@@ -2886,9 +3830,12 @@ $script:Interactive = $false
 function Say([string]$t = '', [string]$c = 'Gray') { [void]$script:Log.Add($t); $sync.Log.Enqueue(@($t, $c)) }
 $script:OnStep = { param($name, $i, $n) $sync.Step = $name; $sync.StepI = $i; $sync.StepN = $n }
 $script:User = Get-TargetUser
+$script:Master = Get-MasterConfig
+Set-Lang $WinKitLang
 '@
   $rs.SessionStateProxy.SetVariable('WinKitReportDir', $ReportDir)
   $rs.SessionStateProxy.SetVariable('WinKitAllowManaged', [bool]$AllowManaged)
+  $rs.SessionStateProxy.SetVariable('WinKitLang', $script:Lang)
   $ps = [PowerShell]::Create(); $ps.Runspace = $rs
   [void]$ps.AddScript($engine + "`n" + $init, $false)
   [void]$ps.Invoke()
@@ -2921,7 +3868,7 @@ function On-Tick {
   if ($n -and $g.Mode -ne 'diag') { $u.svLog.ScrollToEnd() }
   if ($g.Mode -eq 'diag' -and $sync.StepN) {
     $pct = [math]::Round(100 * ($sync.StepI - 1) / $sync.StepN)
-    $u.pbDiag.Value = $pct; $u.txtDiagPct.Text = ('{0}%' -f $pct); $u.txtDiagStep.Text = ('Проверяю: ' + $sync.Step + '…')
+    $u.pbDiag.Value = $pct; $u.txtDiagPct.Text = ('{0}%' -f $pct); $u.txtDiagStep.Text = ((T 'Проверяю:') + ' ' + $sync.Step + '…')
   }
   if ($g.Mode -eq 'run' -and $g.RunItems) {
     $done = @($g.RunItems | Where-Object { $_.Result }).Count; $tot = @($g.RunItems).Count
@@ -2951,13 +3898,13 @@ function Start-GuiDiag {
   Start-EngineJob 'Gui-Diag' {
     param($err)
     $g = $script:G; $u = $g.Ui
-    $u.pnlDiagProgress.Visibility = 'Collapsed'; $u.btnDiag.IsEnabled = $true; $u.txtDiagBtn.Text = 'Повторить диагностику'
+    $u.pnlDiagProgress.Visibility = 'Collapsed'; $u.btnDiag.IsEnabled = $true; $u.txtDiagBtn.Text = (T 'Повторить диагностику')
     $r = $g.Sync.Result
     if (-not $r) { Show-Banner ('Диагностика не завершилась: ' + $err); return }
     $g.Diag = $r
     Render-Overview $r
     $g.CanRun = ($g.Admin -and -not $r.Managed)
-    if ($r.Managed) { Show-Banner 'Это рабочий (управляемый) компьютер — изменения не делаем, только диагностика.' }
+    if ($r.Managed) { Show-Banner (T 'Это рабочий (управляемый) компьютер — изменения не делаем, только диагностика.') }
     elseif (-not $g.Admin) { Show-Banner 'Нет прав администратора: диагностика неполная, «Выполнить» и откат недоступны. Запускайте через start.bat.' }
     else { Show-Banner '' }
     Render-Plan $r.Plan
@@ -2965,15 +3912,16 @@ function Start-GuiDiag {
   }
 }
 
-function Start-GuiExecute {
+function Start-GuiExecute([bool]$dry = $false) {
   $g = $script:G; $u = $g.Ui
   if ($g.Job -or -not $g.Plan) { return }
   $sel = @($g.Plan | Where-Object { $_.Checked })
   if (-not $sel.Count) { return }
   $irr = @($sel | Where-Object { $_.Section -eq 'uninstall' -or $_.Section -eq 'clean' } | ForEach-Object { $_.Title })
-  $msg = ('Будет выполнено пунктов: {0}. Перед изменениями — точка восстановления и журнал отката.' -f $sel.Count)
-  if ($irr.Count) { $msg += ' Необратимые пункты (вернуть нельзя):' } else { $msg += ' Всё выбранное можно откатить.' }
-  if (-not (Show-Confirm 'Выполнить план?' $msg $irr 'Выполнить' 'go')) { return }
+  $msg = ((T 'Будет выполнено пунктов: {0}. Перед изменениями — точка восстановления и журнал отката.') -f $sel.Count)
+  if ($irr.Count) { $msg += ' ' + (T 'Необратимые пункты (вернуть нельзя):') } else { $msg += ' ' + (T 'Всё выбранное можно откатить.') }
+  if (-not $dry -and -not (Show-Confirm (T 'Выполнить план?') $msg $irr (T 'Выполнить') 'go')) { return }
+  $g.Sync.Dry = $dry; $g.Dry = $dry
   foreach ($p in $g.Plan) { $p.Result = '' }
   $g.RunItems = $sel; $g.Freed = $null; $g.Mode = 'run'
   $u.logPanel.Children.Clear(); $u.pnlDone.Visibility = 'Collapsed'; $u.pbRun.Value = 0; $u.txtRunPct.Text = '0%'
@@ -2981,15 +3929,17 @@ function Start-GuiExecute {
   $u.txtRunStep.Text = 'Начинаю…'; $u.btnRun.IsEnabled = $false; $u.btnDiag.IsEnabled = $false
   Set-Page 'Run'
   $g.Sync.Plan = $g.Plan
-  Start-EngineJob 'Gui-Execute $sync.Plan' {
+  Start-EngineJob '$script:DryRun = [bool]$sync.Dry; try { Gui-Execute $sync.Plan } finally { $script:DryRun = $false }' {
     param($err)
     $g = $script:G; $u = $g.Ui; $r = $g.Sync.Result
-    $ok = @($g.RunItems | Where-Object { $_.Result -match '^(ok|удалено|чисто)' }).Count
-    $bad = @($g.RunItems | Where-Object { $_.Result -and $_.Result -notmatch '^(ok|удалено|чисто)' }).Count
+    $ok = @($g.RunItems | Where-Object { $_.Result -match '^(ok|удалено|чисто|проверено)' }).Count
+    $bad = @($g.RunItems | Where-Object { $_.Result -and $_.Result -notmatch '^(ok|удалено|чисто|проверено)' }).Count
     $u.pbRun.Value = 100; $u.txtRunPct.Text = '100%'
     $u.txtRunStep.Text = $(if ($err) { 'Остановлено с ошибкой' } else { 'Готово' })
-    $u.txtDoneTitle.Text = ('Готово: выполнено {0}, с замечаниями {1}' -f $ok, $bad) + $(if ($g.Freed) { (' · освобождено ' + $g.Freed) } else { '' })
-    $sub = 'Проверьте с клиентом: Пуск, поиск, интернет, звук, принтер, камера, его программы. Автозагрузка применится после перезагрузки.'
+    $u.txtDoneTitle.Text = ((T 'Готово: выполнено {0}, с замечаниями {1}') -f $ok, $bad) + $(if ($g.Freed) { (' · ' + (T 'освобождено') + ' ' + $g.Freed) } else { '' })
+    $sub = (T 'Проверьте с клиентом: Пуск, поиск, интернет, звук, принтер, камера, его программы. После перезагрузки нажмите «Проверка после перезагрузки» на странице «Обзор».')
+    if ($g.Dry) { $u.txtDoneTitle.Text = ((T 'Только посмотреть: {0} пунктов — ничего не изменено') -f $ok); $sub = (T 'В журнале выше — что именно сделает каждый пункт.') }
+    $u.btnClientReport.Visibility = $(if ($r -and $r.ClientReport) { 'Visible' } else { 'Collapsed' }); $u.btnReportDesk.Visibility = $u.btnClientReport.Visibility
     if ($err) { $sub = 'Ошибка набора: ' + $err + ' — пришлите отчёт Claude.' }
     $u.txtDoneSub.Text = $sub
     if ($bad -or $err) { $u.doneIcoBg.Background = (New-Brush '#3A2A10'); $u.doneIco.Text = [string][char]0xE7BA; $u.doneIco.Foreground = (New-Brush '#FBBF24') }
@@ -2998,6 +3948,7 @@ function Start-GuiExecute {
     $u.pnlDone.Visibility = 'Visible'; $u.btnDiag.IsEnabled = $true
     $g.Mode = ''
     Update-PlanSummary
+    Update-PostCheckButton
   }
 }
 
@@ -3065,7 +4016,9 @@ function Start-GuiRollback([bool]$all) {
     $u.pbRun.Value = 100; $u.txtRunPct.Text = '100%'; $u.txtRunStep.Text = 'Откат завершён'
     if ($r) { $u.txtDoneTitle.Text = ('Возвращено: {0}, ошибок: {1}' -f $r.Ok, $r.Fail); $g.LastReport = $r.ReportZip } else { $u.txtDoneTitle.Text = 'Откат остановлен с ошибкой' }
     $u.txtDoneSub.Text = $(if ($err) { 'Ошибка: ' + $err } else { 'Автозагрузка вернётся после перезагрузки или повторного входа в Windows.' })
+    $u.btnClientReport.Visibility = 'Collapsed'; $u.btnReportDesk.Visibility = 'Collapsed'
     $u.pnlDone.Visibility = 'Visible'; $g.Mode = ''
+    Update-PostCheckButton
   }
 }
 
@@ -3104,7 +4057,8 @@ function New-GuiRoot {
              'btnDiag', 'txtDiagBtn', 'txtOverviewSub', 'pnlDiagProgress', 'txtDiagPct', 'txtDiagStep', 'pbDiag', 'cardsPanel', 'pnlFindCount', 'findingsPanel', 'txtSpaceTitle', 'spacePanel',
              'btnRun', 'txtPlanSummary', 'txtFilter', 'txtFilterHint', 'btnSelAuto', 'btnSelBase', 'btnSelNone', 'planPanel',
              'txtRunTitle', 'txtRunSub', 'txtRunPct', 'txtRunStep', 'txtRunCount', 'pbRun', 'svLog', 'logPanel', 'pnlDone', 'btnOpenReport', 'btnRestartExplorer', 'btnReboot', 'doneIcoBg', 'doneIco', 'txtDoneTitle', 'txtDoneSub',
-             'btnRbRefresh', 'sessionsPanel', 'btnRbSel', 'btnRbAll', 'txtRbTitle', 'rbPanel', 'btnOpenReports', 'reportsPanel')
+             'btnRbRefresh', 'sessionsPanel', 'btnRbSel', 'btnRbAll', 'txtRbTitle', 'rbPanel', 'btnOpenReports', 'reportsPanel',
+             'txtMaster', 'cbLang', 'btnPostCheck', 'pnlUpdate', 'btnUpdate', 'txtUpdate', 'btnDry', 'cbPreset', 'btnClientReport', 'btnReportDesk', 'btnCollect', 'btnLastClient')
   $ui = @{}
   foreach ($n in $names) { $ui[$n] = $root.FindName($n); if (-not $ui[$n]) { throw "в разметке нет элемента $n" } }
   $script:G = @{ Root = $root; Ui = $ui; Job = $null; Mode = ''; Plan = $null; Rows = @(); SectionHeads = @(); Admin = (Test-Admin); CanRun = $false; RbChecks = @() }
@@ -3133,6 +4087,7 @@ function New-GuiRoot {
   $ui.btnRbAll.Add_Click({ Start-GuiRollback $true })
   $ui.btnRbSel.Add_Click({ Start-GuiRollback $false })
   $ui.btnOpenReports.Add_Click({ $d = $script:G.ReportsDir; if (-not $d) { $d = Join-Path $script:Root 'reports' }; New-Item -ItemType Directory -Force -Path $d | Out-Null; Start-Process explorer.exe ('"' + $d + '"') })
+  Initialize-GuiExtras $root
   Set-Page 'Overview'
   return $root
 }
@@ -3151,6 +4106,7 @@ function Show-Gui {
   Write-Host 'win-kit: открываю окно…' -ForegroundColor Cyan
   $root = New-GuiRoot
   Initialize-Engine
+  Start-GuiUpdateCheck
   $w = New-Object Windows.Window
   $w.Title = 'win-kit — диагностика и чистка Windows'
   $w.Width = 1280; $w.Height = 820; $w.MinWidth = 1040; $w.MinHeight = 660
@@ -3214,9 +4170,171 @@ function Test-Gui {
   if (@($g.Journals).Count) { Show-Journal $g.Journals[0] }
   Save-GuiShot $root 'rollback' $dir
   Set-Page 'Reports'; Save-GuiShot $root 'reports' $dir
+  # 0.5: набор «Слабый ПК» и окно на португальском
+  foreach ($it in $g.Ui.cbPreset.Items) { if ($it.Tag -eq 'weak') { $g.Ui.cbPreset.SelectedItem = $it } }
+  Write-Host ('GUITEST preset weak: checked {0}' -f @($g.Plan | Where-Object { $_.Checked }).Count)
+  Set-Lang 'pt'; Set-UiLang; Render-Overview $g.Diag; Render-Plan $g.Plan
+  Set-Page 'Plan'; Save-GuiShot $root 'plan_pt' $dir
+  Set-Page 'Overview'; Save-GuiShot $root 'overview_pt' $dir
+  Set-Lang 'ru'
   try { $g.Rs.Close() } catch {}
   if ($script:Errors.Count) { foreach ($e in $script:Errors) { Write-Host ('GUITEST error: ' + $e) } }
   Write-Host 'GUITEST OK'
+}
+
+# ---------------------------------------------------------------- 0.5: язык, наборы, мастер, проверка после перезагрузки, обновление
+
+# все тексты разметки запоминаются один раз (по-русски), потом переводятся под выбранный язык
+function Get-UiTexts($root) {
+  $list = New-Object System.Collections.ArrayList
+  $walk = $null
+  $walk = {
+    param($el)
+    if ($el -is [Windows.Controls.TextBlock]) { if ($el.Text -and $el.FontFamily.Source -notmatch 'MDL2') { [void]$list.Add(@($el, 'Text', $el.Text)) } }
+    elseif ($el -is [Windows.Controls.ComboBoxItem]) { return }
+    elseif ($el -is [Windows.Controls.ContentControl] -and $el.Content -is [string]) { [void]$list.Add(@($el, 'Content', $el.Content)) }
+    if ($el -is [Windows.FrameworkElement] -and $el.ToolTip -is [string]) { [void]$list.Add(@($el, 'ToolTip', $el.ToolTip)) }
+    foreach ($ch in [Windows.LogicalTreeHelper]::GetChildren($el)) { if ($ch -is [Windows.DependencyObject]) { & $walk $ch } }
+  }
+  & $walk $root
+  return ,$list
+}
+function Set-UiLang {
+  foreach ($x in $script:G.Texts) { try { $x[0].($x[1]) = (T $x[2]) } catch {} }
+  $script:G.Ui.txtVer.Text = ((T 'версия') + ' ' + $script:Version)
+  Update-PresetList
+}
+function Update-PresetList {
+  $cb = $script:G.Ui.cbPreset; $cur = 'recommended'
+  if ($cb.SelectedItem) { $cur = $cb.SelectedItem.Tag }
+  $script:G.NoPresetEvent = $true
+  $cb.Items.Clear()
+  foreach ($k in $script:Presets.Keys) { $it = New-Object Windows.Controls.ComboBoxItem; $it.Tag = $k; $it.Content = ((T 'Набор') + ': ' + (T $script:Presets[$k])); [void]$cb.Items.Add($it); if ($k -eq $cur) { $cb.SelectedItem = $it } }
+  $script:G.NoPresetEvent = $false
+}
+
+function Save-MasterLang([string]$lang) {
+  $p = Join-Path $script:Root 'master.txt'
+  try {
+    $lines = @(); if (Test-Path -LiteralPath $p) { $lines = @(Get-Content -LiteralPath $p -Encoding UTF8) }
+    $found = $false
+    $lines = @($lines | ForEach-Object { if ($_ -match '^\s*lang\s*=') { $found = $true; 'lang=' + $lang } else { $_ } })
+    if (-not $found) { $lines += ('lang=' + $lang) }
+    [IO.File]::WriteAllText($p, (($lines -join "`r`n") + "`r`n"), $script:Utf8Bom)
+  } catch { Note-Error 'master.txt' $_.Exception.Message }
+}
+
+function Update-PostCheckButton {
+  $u = $script:G.Ui; $st = Get-PostCheckState
+  $u.btnPostCheck.Visibility = $(if ($st -and -not $st.done) { 'Visible' } else { 'Collapsed' })
+  if (Test-PostCheckDue) { Show-Banner (T 'Было обслуживание и перезагрузка — нажмите «Проверка после перезагрузки» (страница «Обзор»).') }
+}
+
+function Open-ClientReport {
+  $p = Join-Path $script:StateDir 'client-report.html'
+  if (Test-Path -LiteralPath $p) { Start-Process $p } else { Show-Confirm (T 'Отчёта клиенту ещё нет') (T 'Он появится после «Выполнить».') @() 'OK' | Out-Null }
+}
+
+function Start-GuiPostCheck {
+  $g = $script:G
+  if ($g.Job) { return }
+  $g.Mode = 'post'; $g.Ui.btnPostCheck.IsEnabled = $false
+  Start-EngineJob 'Gui-PostCheck' {
+    param($err)
+    $g = $script:G; $g.Mode = ''; $g.Ui.btnPostCheck.IsEnabled = $true
+    $r = $g.Sync.Result
+    Update-PostCheckButton
+    if (-not $r) { Show-Banner ((T 'Проверка не удалась: ') + $err); return }
+    Show-Banner ''
+    $lines = @()
+    if ($r.Before -and $r.After) {
+      $lines += ((T 'Свободно на диске') + (': {0} → {1} ' -f $r.Before.FreeGB, $r.After.FreeGB) + (T 'ГБ'))
+      $lines += ((T 'Программ в автозагрузке') + (': {0} → {1}' -f $r.Before.StartupEnabled, $r.After.StartupEnabled))
+      if ($r.After.BootMs) { $lines += ((T 'Время загрузки') + (': {0} → {1} ' -f $(if ($r.Before.BootMs) { [math]::Round($r.Before.BootMs / 1000) } else { '?' }), [math]::Round($r.After.BootMs / 1000)) + (T 'с')) }
+    }
+    if (@($r.Bad).Count) {
+      $msg = (T 'После обслуживания перестало работать:') + ' ' + (@($r.Bad) -join ', ') + '. ' + (T 'Можно вернуть всё как было — журнал отката сохранён.')
+      if (Show-Confirm (T 'Найдена проблема') $msg @() (T 'Вернуть как было') 'warn') {
+        $j = @((Gui-Journals) | Where-Object { $_.Path -eq $r.Journal }) | Select-Object -First 1
+        if ($j) { $g.CurJournal = $j; Start-GuiRollback $true }
+      }
+    } else {
+      if (Show-Confirm (T 'Всё работает') (T 'Компьютер проверен после перезагрузки. Отчёт клиенту обновлён.') $lines (T 'Открыть отчёт') 'go') { Open-ClientReport }
+    }
+  }
+}
+
+function Start-GuiUpdateCheck {
+  $g = $script:G
+  if (-not $script:Master.update_url -or $g.Job) { return }
+  $g.Mode = 'update'; $g.Ui.btnDiag.IsEnabled = $false
+  Start-EngineJob 'Gui-UpdateCheck' {
+    param($err)
+    $g = $script:G; $g.Mode = ''; $g.Ui.btnDiag.IsEnabled = $true
+    $r = $g.Sync.Result
+    if ($r) { $g.Upd = $r; $g.Ui.txtUpdate.Text = ((T 'Есть новая версия набора: {0}') -f $r.Version) + $(if ($r.Notes) { ' — ' + $r.Notes } else { '' }); $g.Ui.pnlUpdate.Visibility = 'Visible' }
+  }
+}
+
+function Start-GuiInstallUpdate {
+  $g = $script:G
+  if ($g.Job -or -not $g.Upd) { return }
+  if (-not (Show-Confirm (T 'Обновить набор?') ((T 'Будет скачана и проверена версия {0}. Старая версия сохранится в папке _previous.') -f $g.Upd.Version) @() (T 'Обновить') 'go')) { return }
+  $g.Sync.Upd = $g.Upd; $g.Mode = 'update'
+  Start-EngineJob 'Gui-InstallUpdate $sync.Upd' {
+    param($err)
+    $g = $script:G; $g.Mode = ''
+    if ($err -or -not $g.Sync.Result) { Show-Banner ((T 'Обновление не установлено: ') + $err); return }
+    $g.Ui.pnlUpdate.Visibility = 'Collapsed'
+    if (Show-Confirm (T 'Набор обновлён') ((T 'Установлена версия {0}. Перезапустить окно?') -f $g.Sync.Result) @() (T 'Перезапустить') 'go') {
+      $sb = Join-Path $script:Root 'start.bat'
+      if (Test-Path -LiteralPath $sb) { Start-Process -FilePath $sb; $g.Window.Close() }
+    }
+  }
+}
+
+function Initialize-GuiExtras($root) {
+  $g = $script:G; $ui = $g.Ui
+  $g.Texts = Get-UiTexts $root
+  # мастер
+  if (Test-MasterSet) {
+    $t = [string]$script:Master.name; $c = (Get-MasterContacts) | Select-Object -First 1
+    if ($c) { $t = ($t + $(if ($t) { ' · ' } else { '' }) + $c.V) }
+    $ui.txtMaster.Text = $t; $ui.txtMaster.Visibility = 'Visible'
+  }
+  # язык
+  foreach ($it in $ui.cbLang.Items) { if ($it.Tag -eq $script:Lang) { $ui.cbLang.SelectedItem = $it } }
+  $ui.cbLang.Add_SelectionChanged({
+    $l = [string]$script:G.Ui.cbLang.SelectedItem.Tag
+    if (-not $l -or $l -eq $script:Lang) { return }
+    Set-Lang $l; Set-UiLang; Save-MasterLang $l
+    if (-not $script:G.Job) { $script:G.Sync.NewLang = $l; Start-EngineJob 'Set-Lang $sync.NewLang' { param($err) } }
+    if ($script:G.Plan) { Render-Plan $script:G.Plan }
+    if ($script:G.Diag) { Render-Overview $script:G.Diag }
+  })
+  # наборы галочек
+  Update-PresetList
+  $ui.cbPreset.Add_SelectionChanged({
+    if ($script:G.NoPresetEvent -or -not $script:G.Plan -or -not $script:G.Ui.cbPreset.SelectedItem) { return }
+    Set-PlanPreset $script:G.Plan ([string]$script:G.Ui.cbPreset.SelectedItem.Tag); Sync-PlanChecks
+  })
+  $ui.btnDry.Add_Click({ Start-GuiExecute $true })
+  $ui.btnPostCheck.Add_Click({ Start-GuiPostCheck })
+  $ui.btnUpdate.Add_Click({ Start-GuiInstallUpdate })
+  $ui.btnClientReport.Add_Click({ Open-ClientReport })
+  $ui.btnLastClient.Add_Click({ Open-ClientReport })
+  $ui.btnReportDesk.Add_Click({
+    try { $d = Copy-ClientReportToDesktop; Show-Confirm (T 'Готово') ((T 'Отчёт положен на рабочий стол клиента: ') + $d) @() 'OK' 'go' | Out-Null }
+    catch { Show-Banner ((T 'Не удалось: ') + $_.Exception.Message) }
+  })
+  $ui.btnCollect.Add_Click({
+    if ($script:G.Job) { return }
+    $script:G.Mode = 'collect'
+    Start-EngineJob 'Gui-Collect' { param($err) $script:G.Mode = ''; $p = $script:G.Sync.Result; if ($p -and (Test-Path -LiteralPath $p)) { Start-Process explorer.exe ('/select,"' + $p + '"') } else { Show-Banner ((T 'Не удалось: ') + $err) } }
+  })
+  $ui.btnClientReport.Visibility = 'Collapsed'; $ui.btnReportDesk.Visibility = 'Collapsed'
+  Set-UiLang
+  Update-PostCheckButton
 }
 # ================================================================ ЗАПУСК
 
@@ -3225,6 +4343,8 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
   exit 3
 }
 $script:User = Get-TargetUser
+$script:Master = Get-MasterConfig
+Set-Lang $(if ($Lang) { $Lang } else { $script:Master.lang })
 try {
   switch ($Mode) {
     'menu'     { Show-Menu }
@@ -3243,6 +4363,9 @@ try {
     'diag'     { Run-Diag }
     'optimize' { Run-Optimize }
     'rollback' { Run-Rollback }
+    'postcheck' { Run-PostCheck }
+    'update'   { Run-Update }
+    'collect'  { $null = Run-Collect }
   }
 } catch {
   Say ('Сбой набора: ' + $_.Exception.Message) 'Red'

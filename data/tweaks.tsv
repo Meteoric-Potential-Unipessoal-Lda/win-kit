@@ -43,3 +43,11 @@ def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defende
 def_policy	auto	security	machine	fix	Software\Policies\Microsoft\Windows Defender\Real-Time Protection	DisableIOAVProtection	delete					
 proxy_off	ask	security	user	fix	Software\Microsoft\Windows\CurrentVersion\Internet Settings	ProxyEnable	DWord	0			Выключить прокси-сервер	Только если клиент не знает, зачем он (подмена прокси — приём рекламных вирусов)
 pac_off	ask	security	user	fix	Software\Microsoft\Windows\CurrentVersion\Internet Settings	AutoConfigURL	delete				Убрать скрипт автонастройки прокси (PAC)	Только если клиент не знает, зачем он
+uac_on	base	security	machine	fix	Software\Microsoft\Windows\CurrentVersion\Policies\System	EnableLUA	DWord	1			Включить контроль учётных записей (UAC)	Был выключен: любая программа получала права администратора молча; применится после перезагрузки
+uac_prompt	base	security	machine	fix	Software\Microsoft\Windows\CurrentVersion\Policies\System	ConsentPromptBehaviorAdmin	DWord	5			Вернуть обычный уровень UAC (спрашивать подтверждение)	Был уровень «Никогда не уведомлять»
+rdp_off	ask	security	machine	fix	SYSTEM\CurrentControlSet\Control\Terminal Server	fDenyTSConnections	DWord	1			Выключить удалённый рабочий стол Windows (RDP)	Если клиент сам к ПК не подключается; AnyDesk это не затрагивает
+storage_sense	base	tweak	user	set	Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy	01	DWord	1			Контроль памяти Windows: сам чистит временные файлы раз в месяц	Встроенная функция Windows; Корзину и «Загрузки» не трогает
+storage_sense	base	tweak	user	with	Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy	2048	DWord	30				
+storage_sense	base	tweak	user	with	Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy	04	DWord	1				
+storage_sense	base	tweak	user	with	Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy	08	DWord	0				
+storage_sense	base	tweak	user	with	Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy	32	DWord	0				
