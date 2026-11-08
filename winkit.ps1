@@ -25,7 +25,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
-$script:Version = '0.4'
+$script:Version = '0.4.1'
 $script:Root = $PSScriptRoot
 if (-not $script:Root -and $WinKitRoot) { $script:Root = $WinKitRoot }
 if (-not $script:Root -and $MyInvocation.MyCommand.Path) { $script:Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -65,7 +65,7 @@ function Ask([string]$q) {
 function Is-Yes([string]$a) { return (@('y','yes','д','да','da','н','s','sim','si') -contains $a) }
 function Fmt-GB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N1} ГБ' -f ([double]$bytes / 1GB)) }
 function Fmt-MB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N0} МБ' -f ([double]$bytes / 1MB)) }
-function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; return (Fmt-MB $bytes) }
+function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; if ($bytes -ge 1MB) { return (Fmt-MB $bytes) }; return ('{0:N0} КБ' -f [math]::Max(1, [math]::Ceiling([double]$bytes / 1KB))) }
 
 function Test-Admin {
   try {
@@ -521,7 +521,7 @@ function Get-PowerInfo {
 
 function Get-DeviceErrors {
   $d = @(Try-Get { Get-CimInstance Win32_PnPEntity -Filter 'ConfigManagerErrorCode <> 0' } 'PnP')
-  return ,@($d | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Code = $_.ConfigManagerErrorCode; Class = $_.PNPClass } })
+  return ,@($d | Where-Object { $_ } | ForEach-Object { $nm = [string]$_.Name; if (-not $nm.Trim()) { $nm = $(if ($_.PNPClass) { 'класс ' + $_.PNPClass + ', ' } else { '' }) + [string]$_.PNPDeviceID }; [pscustomobject]@{ Name = $nm; Code = $_.ConfigManagerErrorCode; Class = $_.PNPClass } })
 }
 
 function Get-UpdateInfo {
@@ -2477,7 +2477,7 @@ $script:GuiXaml = @'
           </StackPanel>
         </DockPanel>
         <DockPanel Grid.Row="1" Margin="0,18,0,12">
-          <TextBox x:Name="txtFilter" DockPanel.Dock="Right" Width="240"/>
+          <Grid DockPanel.Dock="Right" Width="240"><TextBox x:Name="txtFilter"/><StackPanel x:Name="txtFilterHint" Orientation="Horizontal" IsHitTestVisible="False" VerticalAlignment="Center" Margin="12,0,0,0"><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,1,8,0"/><TextBlock Text="Поиск по плану…" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></StackPanel></Grid>
           <WrapPanel VerticalAlignment="Center">
             <Button x:Name="btnSelAuto" Style="{StaticResource Ghost}" Content="Как рекомендовано" Margin="0,0,8,0"/>
             <Button x:Name="btnSelBase" Style="{StaticResource Ghost}" Content="+ всё «можно»" Margin="0,0,8,0"/>
@@ -2518,12 +2518,13 @@ $script:GuiXaml = @'
               <Button x:Name="btnRestartExplorer" Style="{StaticResource Ghost}" Content="Перезапустить Проводник" Margin="0,0,8,0"/>
               <Button x:Name="btnReboot" Style="{StaticResource Btn}" Content="Перезагрузить ПК"/>
             </WrapPanel>
-            <StackPanel Orientation="Horizontal">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
               <Border x:Name="doneIcoBg" Width="40" Height="40" CornerRadius="20" Background="#10301F" Margin="0,0,14,0" VerticalAlignment="Center">
                 <TextBlock x:Name="doneIco" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#34D399" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
-              <StackPanel VerticalAlignment="Center"><TextBlock x:Name="txtDoneTitle" FontSize="16" FontWeight="SemiBold"/><TextBlock x:Name="txtDoneSub" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0" MaxWidth="560" HorizontalAlignment="Left"/></StackPanel>
-            </StackPanel>
+              <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock x:Name="txtDoneTitle" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock x:Name="txtDoneSub" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/></StackPanel>
+            </Grid>
           </DockPanel>
         </Border>
       </Grid>
@@ -3101,7 +3102,7 @@ function New-GuiRoot {
   $names = @('txtVer', 'txtPc', 'txtOs', 'navOverview', 'navPlan', 'navRun', 'navRollback', 'navReports', 'badgePlan', 'txtBadgePlan', 'badgeAdmin', 'icoAdmin', 'txtAdmin',
              'banner', 'txtBanner', 'pageOverview', 'pagePlan', 'pageRun', 'pageRollback', 'pageReports',
              'btnDiag', 'txtDiagBtn', 'txtOverviewSub', 'pnlDiagProgress', 'txtDiagPct', 'txtDiagStep', 'pbDiag', 'cardsPanel', 'pnlFindCount', 'findingsPanel', 'txtSpaceTitle', 'spacePanel',
-             'btnRun', 'txtPlanSummary', 'txtFilter', 'btnSelAuto', 'btnSelBase', 'btnSelNone', 'planPanel',
+             'btnRun', 'txtPlanSummary', 'txtFilter', 'txtFilterHint', 'btnSelAuto', 'btnSelBase', 'btnSelNone', 'planPanel',
              'txtRunTitle', 'txtRunSub', 'txtRunPct', 'txtRunStep', 'txtRunCount', 'pbRun', 'svLog', 'logPanel', 'pnlDone', 'btnOpenReport', 'btnRestartExplorer', 'btnReboot', 'doneIcoBg', 'doneIco', 'txtDoneTitle', 'txtDoneSub',
              'btnRbRefresh', 'sessionsPanel', 'btnRbSel', 'btnRbAll', 'txtRbTitle', 'rbPanel', 'btnOpenReports', 'reportsPanel')
   $ui = @{}
@@ -3124,7 +3125,7 @@ function New-GuiRoot {
   $ui.btnSelAuto.Add_Click({ foreach ($p in @($script:G.Plan)) { $p.Checked = [bool]$p.Default }; Sync-PlanChecks })
   $ui.btnSelBase.Add_Click({ foreach ($p in @($script:G.Plan)) { if ($p.Level -eq 'base') { $p.Checked = $true } }; Sync-PlanChecks })
   $ui.btnSelNone.Add_Click({ foreach ($p in @($script:G.Plan)) { $p.Checked = $false }; Sync-PlanChecks })
-  $ui.txtFilter.Add_TextChanged({ Apply-PlanFilter })
+  $ui.txtFilter.Add_TextChanged({ $script:G.Ui.txtFilterHint.Visibility = $(if ($script:G.Ui.txtFilter.Text) { 'Collapsed' } else { 'Visible' }); Apply-PlanFilter })
   $ui.btnOpenReport.Add_Click({ if ($script:G.LastReport -and (Test-Path -LiteralPath $script:G.LastReport)) { Start-Process explorer.exe ('/select,"' + $script:G.LastReport + '"') } else { Set-Page 'Reports' } })
   $ui.btnRestartExplorer.Add_Click({ Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe } })
   $ui.btnReboot.Add_Click({ if (Show-Confirm 'Перезагрузить компьютер?' 'Через 30 секунд компьютер перезагрузится. AnyDesk отключится — клиенту нужно будет снова дать доступ. «Было/стало» — диагностика через 2–3 минуты после входа.' @() 'Перезагрузить' 'warn') { & shutdown.exe /r /t 30 /c 'win-kit: restart' } })
