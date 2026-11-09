@@ -70,9 +70,9 @@ function Ask([string]$q) {
   return ([string]$a).Trim().ToLower()
 }
 function Is-Yes([string]$a) { return (@('y','yes','д','да','da','н','s','sim','si') -contains $a) }
-function Fmt-GB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N1} ГБ' -f ([double]$bytes / 1GB)) }
-function Fmt-MB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N0} МБ' -f ([double]$bytes / 1MB)) }
-function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; if ($bytes -ge 1MB) { return (Fmt-MB $bytes) }; if ($bytes -le 0) { return '0 КБ' }; return ('{0:N0} КБ' -f [math]::Max(1, [math]::Ceiling([double]$bytes / 1KB))) }
+function Fmt-GB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N1} ' -f ([double]$bytes / 1GB)) + (T 'ГБ') }
+function Fmt-MB($bytes) { if ($null -eq $bytes) { return '?' }; return ('{0:N0} ' -f ([double]$bytes / 1MB)) + (T 'МБ') }
+function Fmt-Size($bytes) { if ($null -eq $bytes) { return '?' }; if ($bytes -ge 1GB) { return (Fmt-GB $bytes) }; if ($bytes -ge 1MB) { return (Fmt-MB $bytes) }; if ($bytes -le 0) { return ('0 ' + (T 'КБ')) }; return (('{0:N0} ' + (T 'КБ')) -f [math]::Max(1, [math]::Ceiling([double]$bytes / 1KB))) }
 
 function Test-Admin {
   try {
@@ -1426,6 +1426,7 @@ function Get-HostsHijack($lines) {
     if ($ip -match '^(127\.|0\.0\.0\.0$|::1?$|0:0:0:0:0:0:0:[01]$)') { continue }
     foreach ($h in $parts[1..($parts.Count - 1)]) {
       if ($h -notmatch '\.' -or $h -match '(?i)\.(local|lan|home|internal|localdomain|intranet|corp|test)$') { continue }
+      if ($env:COMPUTERNAME -and ($h -ieq $env:COMPUTERNAME -or $h.StartsWith($env:COMPUTERNAME + '.', [StringComparison]::OrdinalIgnoreCase))) { continue }   # имя самого ПК — не подмена
       [void]$res.Add([pscustomobject]@{ Ip = $ip; Host = $h; Line = [string]$l })
     }
   }
@@ -3415,13 +3416,13 @@ $script:GuiXaml = @'
         <DockPanel Grid.Row="1" Margin="0,18,0,12">
           <Grid DockPanel.Dock="Right" Width="240"><TextBox x:Name="txtFilter"/><StackPanel x:Name="txtFilterHint" Orientation="Horizontal" IsHitTestVisible="False" VerticalAlignment="Center" Margin="12,0,0,0"><TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,1,8,0"/><TextBlock Text="Поиск по плану…" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></StackPanel></Grid>
           <WrapPanel VerticalAlignment="Center">
-            <ComboBox x:Name="cbPreset" Width="170" Margin="0,0,8,0" VerticalAlignment="Center" FontSize="13"/>
+            <ComboBox x:Name="cbPreset" Width="215" Margin="0,0,8,0" VerticalAlignment="Center" FontSize="13"/>
             <Button x:Name="btnSelAuto" Style="{StaticResource Ghost}" Content="Как рекомендовано" Margin="0,0,8,0"/>
             <Button x:Name="btnSelBase" Style="{StaticResource Ghost}" Content="+ всё «можно»" Margin="0,0,8,0"/>
             <Button x:Name="btnSelNone" Style="{StaticResource Ghost}" Content="Снять всё" Margin="0,0,18,0"/>
             <Border CornerRadius="7" Background="#10301F" Padding="9,4" Margin="0,0,6,0" VerticalAlignment="Center"><TextBlock Text="авто" Foreground="#34D399" FontSize="11"/></Border>
             <Border CornerRadius="7" Background="#162442" Padding="9,4" Margin="0,0,6,0" VerticalAlignment="Center"><TextBlock Text="можно" Foreground="#8FB0FF" FontSize="11"/></Border>
-            <Border CornerRadius="7" Background="#3A2A10" Padding="9,4" VerticalAlignment="Center"><TextBlock Text="спросить клиента" Foreground="#FBBF24" FontSize="11"/></Border>
+            <Border CornerRadius="7" Background="#3A2A10" Padding="9,4" VerticalAlignment="Center"><TextBlock Text="спросить" Foreground="#FBBF24" FontSize="11"/></Border>
           </WrapPanel>
         </DockPanel>
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -3641,7 +3642,7 @@ function Render-Overview($r) {
   $u.cardsPanel.Children.Clear(); $u.findingsPanel.Children.Clear(); $u.spacePanel.Children.Clear(); $u.pnlFindCount.Children.Clear()
   $s = $r.Sys
   $u.txtPc.Text = (('{0} {1}' -f $s.Manufacturer, $s.Model) -replace '\s+', ' ').Trim()
-  $u.txtOs.Text = ('{0} {1} · сборка {2}' -f $s.Caption, $s.DisplayVersion, $s.Build)
+  $u.txtOs.Text = (('{0} {1} · ' + (T 'сборка') + ' {2}') -f $s.Caption, $s.DisplayVersion, $s.Build)
   $u.txtOverviewSub.Text = ((T 'Диагностика {0:dd.MM HH:mm} · пользователь {1}') -f (Get-Date), $r.User.ShortName)
   # карточки
   $winState = 'ok'; if (-not $s.IsWin11) { $winState = 'bad' } elseif ($r.Activation -ne 'активирована') { $winState = 'warn' }
