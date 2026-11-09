@@ -1,0 +1,36 @@
+name: release
+# Ручной запуск: Actions -> release -> Run workflow. Собирает архив для клиента и version.json для автообновления.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      UPDATE_TOKEN: ${{ secrets.UPDATE_TOKEN }}
+      UPDATE_REPO: ${{ vars.UPDATE_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kit zip and version.json
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/release.ps1
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(cat dist/VERSION)
+          gh release create "v$V" dist/win-kit-$V.zip dist/version.json --title "win-kit $V" --notes-file dist/notes.txt || gh release upload "v$V" dist/win-kit-$V.zip dist/version.json --clobber
+      - name: Publish to public update repo (optional)
+        if: ${{ env.UPDATE_TOKEN != '' && env.UPDATE_REPO != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UPDATE_TOKEN }}
+        run: |
+          V=$(cat dist/VERSION)
+          gh release create "v$V" dist/win-kit-$V.zip dist/version.json --repo "$UPDATE_REPO" --title "win-kit $V" --notes-file dist/notes.txt || gh release upload "v$V" dist/win-kit-$V.zip dist/version.json --clobber --repo "$UPDATE_REPO"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-kit-release
+          path: dist
