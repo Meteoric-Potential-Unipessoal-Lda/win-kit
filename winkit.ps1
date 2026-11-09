@@ -2985,7 +2985,7 @@ function Invoke-PostCheck {
   $rep = $null
   if ($st.report) {
     $d = @{}; foreach ($p in $st.report.PSObject.Properties) { $d[$p.Name] = $p.Value }
-    $d.after = $after; $d.stage = $(if ($bad.Count) { 'problem' } else { 'after-reboot' }); $d.created = (Get-Date).ToString('s')
+    $d.after = $after; $d.lang = $script:Lang; $d.stage = $(if ($bad.Count) { 'problem' } else { 'after-reboot' }); $d.created = (Get-Date).ToString('s')
     $rep = Save-ClientReport $d $null
   }
   Add-HistoryVisit 'postcheck' @{ ok = (-not $bad.Count); bad = ($bad -join ', ') }
