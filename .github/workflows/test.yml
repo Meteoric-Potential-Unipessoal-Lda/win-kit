@@ -17,6 +17,9 @@ jobs:
       - name: Parse with Windows PowerShell 5.1
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/parse.ps1
+      - name: Unit tests (Pester 5) and ScriptAnalyzer
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/unit.ps1
       - name: Diag -> optimize -> rollback
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/ci-test.ps1
@@ -26,13 +29,3 @@ jobs:
         with:
           name: reports-${{ matrix.os }}
           path: ci-reports
-      - name: Upload kit
-        if: matrix.os == 'windows-2022'
-        uses: actions/upload-artifact@v4
-        with:
-          name: win-kit
-          path: |
-            winkit.ps1
-            start.bat
-            README.txt
-            data/
