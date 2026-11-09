@@ -1540,11 +1540,11 @@ function Get-MasterContacts {
 
 # ---------------------------------------------------------------- языки (data\lang.tsv: ru, uk, en, pt)
 
-$script:Lang = 'ru'
+$script:UiLang = 'ru'
 $script:Tr = @{}
 function Set-Lang([string]$lang) {
   if (@('ru', 'uk', 'en', 'pt') -notcontains $lang) { $lang = 'ru' }
-  $script:Lang = $lang; $script:Tr = @{}
+  $script:UiLang = $lang; $script:Tr = @{}
   if ($lang -eq 'ru') { return }
   $p = Join-Path $script:Root 'data\lang.tsv'
   if (-not (Test-Path -LiteralPath $p)) { Note-Error 'lang' 'нет data\lang.tsv'; return }
@@ -1559,7 +1559,7 @@ function Set-Lang([string]$lang) {
   }
 }
 function T([string]$s) {
-  if ($script:Lang -eq 'ru' -or -not $s) { return $s }
+  if ($script:UiLang -eq 'ru' -or -not $s) { return $s }
   $v = $script:Tr[$s]; if ($v) { return $v }
   return $s
 }
@@ -2078,7 +2078,7 @@ function Get-ClientReportData($plan, $before, $after, [string]$stage) {
   $find = @(@($script:Findings) | Where-Object { $_ -and $_.Sev -eq 'red' } | Select-Object -First 8 | ForEach-Object { [string]$_.Text })
   $m = $script:Master
   return [ordered]@{
-    created = (Get-Date).ToString('s'); stage = $stage; lang = $script:Lang; kit = $script:Version; pcId = (Get-PcId)
+    created = (Get-Date).ToString('s'); stage = $stage; lang = $script:UiLang; kit = $script:Version; pcId = (Get-PcId)
     pc = [ordered]@{ model = (('{0} {1}' -f $s.Manufacturer, $s.Model) -replace '\s+', ' ').Trim(); os = ('{0} {1}' -f $s.Caption, $s.DisplayVersion); build = [string]$s.Build
                      cpu = (($s.Cpu -replace '\(R\)|\(TM\)|CPU|Processor|@.*', '' -replace '\s+', ' ').Trim()); ram = $s.RamGB; win11 = [bool]$s.IsWin11; activation = [string]$script:Activation }
     master = [ordered]@{ name = [string]$m.name; contacts = @((Get-MasterContacts) | ForEach-Object { [ordered]@{ k = $_.K; v = $_.V } }); logo = [string]$m.logo }
@@ -2835,7 +2835,7 @@ function New-HelpHtml {
   $rows = ((Get-MasterContacts) | ForEach-Object { '<div class="r"><span>' + (& $E $_.K) + '</span><b>' + (& $E $_.V) + '</b></div>' }) -join ''
   $steps = @((T 'Откройте AnyDesk (значок на рабочем столе или в меню Пуск).'), (T 'Назовите мастеру номер «Это рабочее место» (9–10 цифр).'), (T 'Когда появится запрос — нажмите «Принять». Никому другому доступ не давайте.'))
   $st = ($steps | ForEach-Object { '<li>' + (& $E $_) + '</li>' }) -join ''
-  return ('<!doctype html><html lang="' + $script:Lang + '"><head><meta charset="utf-8"><title>' + (& $E (T 'Помощь мастера')) + '</title><style>body{font:16px/1.5 "Segoe UI",Arial;background:#F5F7FA;color:#16202E;margin:0}.w{max-width:620px;margin:40px auto;background:#fff;border:1px solid #E3E7EE;border-radius:18px;padding:26px 30px}h1{font-size:24px;margin:0 0 6px}.r{display:flex;justify-content:space-between;border-bottom:1px solid #E3E7EE;padding:8px 0}.m{color:#5C6778}</style></head><body><div class="w"><h1>' + (& $E (T 'Помощь мастера')) + '</h1><div class="m">' + (& $E $m.name) + '</div>' + $rows + '<h2 style="font-size:17px;margin:22px 0 6px">' + (& $E (T 'Как дать мастеру доступ')) + '</h2><ol>' + $st + '</ol></div></body></html>')
+  return ('<!doctype html><html lang="' + $script:UiLang + '"><head><meta charset="utf-8"><title>' + (& $E (T 'Помощь мастера')) + '</title><style>body{font:16px/1.5 "Segoe UI",Arial;background:#F5F7FA;color:#16202E;margin:0}.w{max-width:620px;margin:40px auto;background:#fff;border:1px solid #E3E7EE;border-radius:18px;padding:26px 30px}h1{font-size:24px;margin:0 0 6px}.r{display:flex;justify-content:space-between;border-bottom:1px solid #E3E7EE;padding:8px 0}.m{color:#5C6778}</style></head><body><div class="w"><h1>' + (& $E (T 'Помощь мастера')) + '</h1><div class="m">' + (& $E $m.name) + '</div>' + $rows + '<h2 style="font-size:17px;margin:22px 0 6px">' + (& $E (T 'Как дать мастеру доступ')) + '</h2><ol>' + $st + '</ol></div></body></html>')
 }
 
 function Invoke-ExtraPlanItem($it, [string]$batch) {
@@ -2985,7 +2985,7 @@ function Invoke-PostCheck {
   $rep = $null
   if ($st.report) {
     $d = @{}; foreach ($p in $st.report.PSObject.Properties) { $d[$p.Name] = $p.Value }
-    $d.after = $after; $d.lang = $script:Lang; $d.stage = $(if ($bad.Count) { 'problem' } else { 'after-reboot' }); $d.created = (Get-Date).ToString('s')
+    $d.after = $after; $d.lang = $script:UiLang; $d.stage = $(if ($bad.Count) { 'problem' } else { 'after-reboot' }); $d.created = (Get-Date).ToString('s')
     $rep = Save-ClientReport $d $null
   }
   Add-HistoryVisit 'postcheck' @{ ok = (-not $bad.Count); bad = ($bad -join ', ') }
@@ -3835,7 +3835,7 @@ Set-Lang $WinKitLang
 '@
   $rs.SessionStateProxy.SetVariable('WinKitReportDir', $ReportDir)
   $rs.SessionStateProxy.SetVariable('WinKitAllowManaged', [bool]$AllowManaged)
-  $rs.SessionStateProxy.SetVariable('WinKitLang', $script:Lang)
+  $rs.SessionStateProxy.SetVariable('WinKitLang', $script:UiLang)
   $ps = [PowerShell]::Create(); $ps.Runspace = $rs
   [void]$ps.AddScript($engine + "`n" + $init, $false)
   [void]$ps.Invoke()
@@ -4303,10 +4303,10 @@ function Initialize-GuiExtras($root) {
     $ui.txtMaster.Text = $t; $ui.txtMaster.Visibility = 'Visible'
   }
   # язык
-  foreach ($it in $ui.cbLang.Items) { if ($it.Tag -eq $script:Lang) { $ui.cbLang.SelectedItem = $it } }
+  foreach ($it in $ui.cbLang.Items) { if ($it.Tag -eq $script:UiLang) { $ui.cbLang.SelectedItem = $it } }
   $ui.cbLang.Add_SelectionChanged({
     $l = [string]$script:G.Ui.cbLang.SelectedItem.Tag
-    if (-not $l -or $l -eq $script:Lang) { return }
+    if (-not $l -or $l -eq $script:UiLang) { return }
     Set-Lang $l; Set-UiLang; Save-MasterLang $l
     if (-not $script:G.Job) { $script:G.Sync.NewLang = $l; Start-EngineJob 'Set-Lang $sync.NewLang' { param($err) } }
     if ($script:G.Plan) { Render-Plan $script:G.Plan }
